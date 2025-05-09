@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, List
 from fastapi.responses import RedirectResponse
 
-from src.enums import CallbackResultType
+from wristband.enums import CallbackResultType
 
 
 @dataclass

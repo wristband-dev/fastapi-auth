@@ -16,10 +16,10 @@ from starlette.datastructures import MutableHeaders
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-from src.models import TokenData, TokenResponse
-from fastapi.api import WristbandError, Api
-from src.enums import CallbackResultType
-from src.models import (
+from wristband.models import TokenData, TokenResponse
+from wristband.fastapi.api import WristbandError, Api
+from wristband.enums import CallbackResultType
+from wristband.models import (
     CallbackData,
     CallbackResult,
     LoginConfig,

@@ -2,7 +2,7 @@ import base64
 from typing import Any
 import requests
 
-from src.models import TokenResponse
+from wristband.models import TokenResponse
 
 
 class WristbandError(Exception):
