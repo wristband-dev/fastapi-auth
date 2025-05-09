@@ -1,0 +1,25 @@
+[project]
+name = "fastapi-auth"
+version = "0.1.0"
+description = "SDK for integrating your Python FastAPI application with Wristband. Handles user authentication and token management."
+authors = [
+    {name = "fddiferd",email = "fddiferd@gmail.com"}
+]
+requires-python = "3.11"
+dependencies = [
+    "cryptography (>=44.0.3,<45.0.0)",
+    "requests (>=2.32.3,<3.0.0)",
+    "fastapi (>=0.115.12,<0.116.0)"
+]
+license = {text = "MIT"}
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
