@@ -71,7 +71,9 @@ class SessionData:
     refresh_token: str
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data: dict[str, str] = asdict(self)
+        data['user_info'] = str(asdict(self.user_info))
+        return data
     
     def to_session_init_data(self) -> dict[str, Any]:
         return {
@@ -109,7 +111,7 @@ class CallbackData:
             expires_at=int((datetime.now() + timedelta(seconds=self.expires_in)).timestamp() * 1000),
             tenant_domain_name=self.tenant_domain_name,
             tenant_custom_domain=self.tenant_custom_domain or "",
-            user_info=self.user_info,
+            user_info=UserInfo.from_dict(self.user_info),
             refresh_token=self.refresh_token or ""
         ).to_dict()
 
