@@ -15,8 +15,8 @@ poetry config pypi-token.pypi <your-token>
 **PULL FROM MAIN**
 - ensure you pull from main as the CICD could bump the version of the pyproject.toml 
 ```bash
-fetch origin main
-merge origin/main
+git fetch origin main
+git merge origin/main
 ```
 
 
