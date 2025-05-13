@@ -48,13 +48,26 @@ class AuthConfig:
     use_tenant_subdomains: bool = False
 
 @dataclass
+class UserInfo:
+    sub: str
+    tnt_id: str
+    app_id: str
+    idp_name: str
+    email: str
+    email_verified: bool
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> 'UserInfo':
+        return UserInfo(**data)
+
+@dataclass
 class SessionData:
     is_authenticated: bool
     access_token: str
     expires_at: int
     tenant_domain_name: str
     tenant_custom_domain: str
-    user_info: dict[str, Any]
+    user_info: UserInfo
     refresh_token: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,14 +75,15 @@ class SessionData:
     
     def to_session_init_data(self) -> dict[str, Any]:
         return {
-            "tenantId": self.user_info['tnt_id'],
-            "userId": self.user_info['sub'],
+            "tenantId": self.user_info.tnt_id,
+            "userId": self.user_info.sub,
             "metadata": self.to_dict()
         }
     
     @staticmethod
     def from_dict(data: dict[str, Any]) -> 'SessionData':
-        return SessionData(**data)
+        user_info: UserInfo = UserInfo.from_dict(data['user_info'])
+        return SessionData(**data, user_info=user_info)
 
 
 @dataclass
