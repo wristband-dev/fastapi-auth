@@ -4,7 +4,6 @@ import requests
 
 from wristband.models import TokenResponse
 
-
 class WristbandError(Exception):
     def __init__(self, error_code: str, error_description: str) -> None:
         self.error_code: str = error_code
