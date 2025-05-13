@@ -29,12 +29,21 @@ jobs:
       
       - name: Check version changes and bump if needed
         run: |
-          # Check if line 3 in pyproject.toml (version line) has changed
+          # Check if version line in pyproject.toml has changed
           if git diff origin/main...HEAD -- pyproject.toml | grep -q "^[+|-]version"; then
             echo "Version already updated in PR"
           else
             echo "No version change detected, bumping patch version"
-            poetry version patch
+            # Get current version
+            CURRENT_VERSION=$(grep -m 1 "version = " pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+            # Split the version into major.minor.patch
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+            # Increment patch version
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+            # Update version in pyproject.toml
+            sed -i "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" pyproject.toml
+            echo "Version bumped from $CURRENT_VERSION to $NEW_VERSION"
           fi
           
       - name: Configure Poetry
