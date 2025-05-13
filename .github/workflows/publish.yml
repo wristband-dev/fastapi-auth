@@ -32,19 +32,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
       
-      - name: Debug git diff
-        run: |
-          echo "Checking for version changes in pyproject.toml"
-          git diff origin/main...HEAD -- pyproject.toml
-          echo "Grepping for version changes:"
-          git diff origin/main...HEAD -- pyproject.toml | grep -q "^[+|-]version" && echo "Version changed" || echo "No version change"
-      
       - name: Check version changes and bump if needed
         run: |
-          # Display current file content
-          echo "Current pyproject.toml content:"
-          cat pyproject.toml
-          
           # Check if version line in pyproject.toml has changed
           if git diff origin/main...HEAD -- pyproject.toml | grep -q "^[+|-]version"; then
             echo "Version already updated in PR"
@@ -52,24 +41,17 @@ jobs:
             echo "No version change detected, bumping patch version"
             # Get current version
             CURRENT_VERSION=$(grep -m 1 "version = " pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-            echo "Current version: $CURRENT_VERSION"
             
             # Split the version into major.minor.patch
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-            echo "Major: $MAJOR, Minor: $MINOR, Patch: $PATCH"
             
             # Increment patch version
             NEW_PATCH=$((PATCH + 1))
             NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-            echo "New version will be: $NEW_VERSION"
             
             # Update version in pyproject.toml
             sed -i "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" pyproject.toml
             echo "Version bumped from $CURRENT_VERSION to $NEW_VERSION"
-            
-            # Display updated file content
-            echo "Updated pyproject.toml content:"
-            cat pyproject.toml
             
             # Commit the version change
             git config --global user.name "GitHub Actions Bot"
@@ -85,10 +67,5 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: |
-          # Build the package
           python -m build
-          ls -la dist/
-          
-          # Publish with verbose output
-          echo "Publishing to PyPI..."
-          python -m twine upload --verbose dist/* 
+          python -m twine upload dist/* 
