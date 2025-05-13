@@ -9,6 +9,17 @@ poetry config pypi-token.pypi <your-token>
 ```
 
 ## CICD
+- on pull to main CICD will run
+    - if the version wasnt changed a version patch will be applied
+
+**PULL FROM MAIN**
+- ensure you pull from main as the CICD could bump the version of the pyproject.toml 
+```bash
+git pull origin main --rebase
+```
+
+
+## Manual Publushing
 **BUILD**
 ```bash
 poetry build
