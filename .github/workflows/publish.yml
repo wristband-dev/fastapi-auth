@@ -1,0 +1,47 @@
+name: Publish to PyPI
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  publish:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+          
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.5.1
+      
+      - name: Check version changes and bump if needed
+        run: |
+          # Check if line 3 in pyproject.toml (version line) has changed
+          if git diff origin/main...HEAD -- pyproject.toml | grep -q "^[+|-]version"; then
+            echo "Version already updated in PR"
+          else
+            echo "No version change detected, bumping patch version"
+            poetry version patch
+          fi
+          
+      - name: Configure Poetry
+        run: |
+          poetry config pypi-token.pypi $PYPI_TOKEN
+          
+      - name: Build and publish
+        run: |
+          poetry build
+          poetry publish 
