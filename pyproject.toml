@@ -1,6 +1,6 @@
 [project]
 name = "wristband"
-version = "4.1.3"
+version = "4.1.4"
 description = "SDK for integrating your Python FastAPI application with Wristband. Handles user authentication and token management."
 authors = [
     {name = "fddiferd",email = "fddiferd@gmail.com"}
