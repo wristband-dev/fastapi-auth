@@ -84,7 +84,14 @@ class SessionData:
     
     @staticmethod
     def from_dict(data: dict[str, Any]) -> 'SessionData':
-        user_info: UserInfo = UserInfo.from_dict(data['user_info'])
+        user_info_data = data.pop('user_info')
+        
+        # If user_info_data is a string, parse it into a dictionary
+        if isinstance(user_info_data, str):
+            import ast
+            user_info_data = ast.literal_eval(user_info_data)
+            
+        user_info: UserInfo = UserInfo.from_dict(user_info_data)
         return SessionData(**data, user_info=user_info)
 
 
