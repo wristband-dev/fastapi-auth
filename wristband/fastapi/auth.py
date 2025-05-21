@@ -46,8 +46,8 @@ class Auth:
         self.login_state_secret: str = auth_config.login_state_secret
         self.login_url: str = auth_config.login_url
         self.redirect_uri: str = auth_config.redirect_uri
-        self.wristband_application_domain: str = (
-            auth_config.wristband_application_domain
+        self.wristband_application_vanity_domain: str = (
+            auth_config.wristband_application_vanity_domain
         )
         self.custom_application_login_page_url: Optional[str] = (
             auth_config.custom_application_login_page_url
@@ -61,7 +61,7 @@ class Auth:
         self.use_tenant_subdomains: bool = auth_config.use_tenant_subdomains
 
         self.api = Api(
-            wristband_application_domain=self.wristband_application_domain,
+            wristband_application_vanity_domain=self.wristband_application_vanity_domain,
             client_id=self.client_id,
             client_secret=self.client_secret,
         )
@@ -99,7 +99,7 @@ class Auth:
         ):
             applogin_url: str = (
                 self.custom_application_login_page_url
-                or f"https://{self.wristband_application_domain}/login"
+                or f"https://{self.wristband_application_vanity_domain}/login"
             )
             return RedirectResponse(url=applogin_url, status_code=302)
 
@@ -323,7 +323,7 @@ class Auth:
         # Construct app login URL
         app_login_url: str = (
             self.custom_application_login_page_url
-            or f"https://{self.wristband_application_domain}/login"
+            or f"https://{self.wristband_application_vanity_domain}/login"
         )
 
         # Handle cases where we should redirect to app login
@@ -347,7 +347,7 @@ class Auth:
         separator: Literal["."] | Literal["-"] = "." if self.use_custom_domains else "-"
         tenant_domain_to_use: str = (
             tenant_custom_domain
-            or f"{tenant_domain_name}{separator}{self.wristband_application_domain}"
+            or f"{tenant_domain_name}{separator}{self.wristband_application_vanity_domain}"
         )
 
         # Perform logout redirect
@@ -593,11 +593,11 @@ class Auth:
         if tenant_custom_domain:
             return f"https://{tenant_custom_domain}/api/v1/oauth2/authorize?{urlencode(query_params)}"
         elif tenant_domain_name:
-            return f"https://{tenant_domain_name}{separator}{self.wristband_application_domain}/api/v1/oauth2/authorize?{urlencode(query_params)}"
+            return f"https://{tenant_domain_name}{separator}{self.wristband_application_vanity_domain}/api/v1/oauth2/authorize?{urlencode(query_params)}"
         elif default_tenant_custom_domain:
             return f"https://{default_tenant_custom_domain}/api/v1/oauth2/authorize?{urlencode(query_params)}"
         else:
-            return f"https://{default_tenant_domain_name}{separator}{self.wristband_application_domain}/api/v1/oauth2/authorize?{urlencode(query_params)}"
+            return f"https://{default_tenant_domain_name}{separator}{self.wristband_application_vanity_domain}/api/v1/oauth2/authorize?{urlencode(query_params)}"
 
     def _get_login_state_cookie(self, req: Request) -> tuple[str | None, str | None]:
         cookies: dict[str, str] = req.cookies

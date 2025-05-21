@@ -38,7 +38,7 @@ class AuthConfig:
     login_state_secret: str
     login_url: str
     redirect_uri: str
-    wristband_application_domain: str
+    wristband_application_vanity_domain: str
 
     custom_application_login_page_url: Optional[str] = None
     dangerously_disable_secure_cookies: bool = False
