@@ -12,11 +12,11 @@ class WristbandError(Exception):
 
 
 class Api:
-    def __init__(self, wristband_application_domain: str, client_id: str, client_secret: str) -> None:
+    def __init__(self, wristband_application_vanity_domain: str, client_id: str, client_secret: str) -> None:
         credentials: str = f"{client_id}:{client_secret}"
         encoded_credentials: str = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
         
-        self.base_url: str = f'https://{wristband_application_domain}/api/v1'
+        self.base_url: str = f'https://{wristband_application_vanity_domain}/api/v1'
         self.headers: dict[str, str] = { 
             'Authorization': f'Basic {encoded_credentials}',
             'Content-Type': 'application/x-www-form-urlencoded'
