@@ -42,10 +42,9 @@ class AuthConfig:
 
     custom_application_login_page_url: Optional[str] = None
     dangerously_disable_secure_cookies: bool = False
-    root_domain: Optional[str] = None
+    parse_tenant_from_root_domain: Optional[str] = None
     scopes: List[str] = field(default_factory=lambda: ['openid', 'offline_access', 'email'])
-    use_custom_domains: bool = False
-    use_tenant_subdomains: bool = False
+    is_application_custom_domain_active: bool = False
 
 @dataclass
 class UserInfo:

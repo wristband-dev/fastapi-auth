@@ -55,10 +55,9 @@ class Auth:
         self.dangerously_disable_secure_cookies: bool = (
             auth_config.dangerously_disable_secure_cookies
         )
-        self.root_domain: Optional[str] = auth_config.root_domain
+        self.parse_tenant_from_root_domain: Optional[str] = auth_config.parse_tenant_from_root_domain
         self.scopes: list[str] = auth_config.scopes
-        self.use_custom_domains: bool = auth_config.use_custom_domains
-        self.use_tenant_subdomains: bool = auth_config.use_tenant_subdomains
+        self.is_application_custom_domain_active: bool = auth_config.is_application_custom_domain_active
 
         self.api = Api(
             wristband_application_vanity_domain=self.wristband_application_vanity_domain,
@@ -81,7 +80,7 @@ class Auth:
         # Determine which domain-related values are present as it will be needed for the authorize URL.
         tenant_custom_domain: str = self._resolve_tenant_custom_domain_param(req)
         tenant_domain_name: str = self._resolve_tenant_domain_name(
-            req, self.root_domain
+            req, self.parse_tenant_from_root_domain
         )
         default_tenant_custom_domain: Optional[str] = (
             config.default_tenant_custom_domain
@@ -168,11 +167,11 @@ class Auth:
 
         # 3) Resolve tenant domain name
         resolved_tenant_domain_name: str = self._resolve_tenant_domain_name(
-            req, self.root_domain
+            req, self.parse_tenant_from_root_domain
         )
         if not resolved_tenant_domain_name:
             # useTenantSubdomains is a design choice; adapt as needed
-            if self.use_tenant_subdomains:
+            if self.parse_tenant_from_root_domain:
                 raise ValueError(
                     "missing_tenant_subdomain: Callback request URL is missing a tenant subdomain"
                 )
@@ -182,7 +181,7 @@ class Auth:
                 )
 
         # 4) Build the tenant login URL in case we need to redirect
-        if self.use_tenant_subdomains:
+        if self.parse_tenant_from_root_domain:
             tenant_login_url: str = self.login_url.replace(
                 "{tenant_domain}", resolved_tenant_domain_name
             )
@@ -329,22 +328,22 @@ class Auth:
         # Handle cases where we should redirect to app login
         if not tenant_custom_domain:
             host_root_domain: str = host.split(".")[-1]
-            if self.use_tenant_subdomains and not host_root_domain == self.root_domain:
+            if self.parse_tenant_from_root_domain is not None and host_root_domain != self.parse_tenant_from_root_domain:
                 res.headers["Location"] = (
                     f"{app_login_url}?client_id={self.client_id}"
                 )
                 return res
-            if not self.use_tenant_subdomains and not tenant_domain_name:
+            if self.parse_tenant_from_root_domain is None and not tenant_domain_name:
                 res.headers["Location"] = (
                     f"{app_login_url}?client_id={self.client_id}"
                 )
                 return res
 
         # Determine tenant domain to use
-        if self.use_tenant_subdomains:
+        if self.parse_tenant_from_root_domain:
             tenant_domain_name = host.split(".")[0]
 
-        separator: Literal["."] | Literal["-"] = "." if self.use_custom_domains else "-"
+        separator: Literal["."] | Literal["-"] = "." if self.is_application_custom_domain_active else "-"
         tenant_domain_to_use: str = (
             tenant_custom_domain
             or f"{tenant_domain_name}{separator}{self.wristband_application_vanity_domain}"
@@ -418,26 +417,22 @@ class Auth:
         return tenant_custom_domain or ""
 
     def _resolve_tenant_domain_name(
-        self, req: Request, root_domain: Optional[str]
-    ) -> str:
+        self, req: Request, parse_tenant_from_root_domain: Optional[str]
+    ) -> str:           
 
-        def parse_tenant_subdomain(
-            req: Request, root_domain: Optional[str]
-        ) -> Optional[str]:
+        if parse_tenant_from_root_domain is not None:
             host = str(req.url.netloc)
-            if root_domain is None or not host.endswith(root_domain):
-                return None
 
-            subdomain = host[: -len(root_domain)].rstrip(".")
+            if not host.endswith(parse_tenant_from_root_domain):
+                return ""
+
+            subdomain: str = host[: -len(parse_tenant_from_root_domain)].rstrip(".")
             if subdomain:
                 return subdomain
 
-            return None
+            return ""
 
-        if self.use_tenant_subdomains:
-            return parse_tenant_subdomain(req, root_domain) or ""
-
-        tenant_domain_param = req.query_params.get("tenant_domain")
+        tenant_domain_param: str | None = req.query_params.get("tenant_domain")
         if tenant_domain_param and isinstance(tenant_domain_param, list):
             raise TypeError(
                 "More than one [tenant_domain] query parameter was encountered"
@@ -588,7 +583,7 @@ class Auth:
         if login_hint:
             query_params["login_hint"] = login_hint
 
-        separator: Literal["."] | Literal["-"] = "." if self.use_custom_domains else "-"
+        separator: Literal["."] | Literal["-"] = "." if self.is_application_custom_domain_active else "-"
 
         if tenant_custom_domain:
             return f"https://{tenant_custom_domain}/api/v1/oauth2/authorize?{urlencode(query_params)}"
