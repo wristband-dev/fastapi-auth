@@ -150,20 +150,8 @@ class Auth:
         )
 
         # 2) Validate basic query params
-        if not param_state:
-            raise TypeError("Invalid or missing query parameter [state].")
-
-        if not code:
-            raise TypeError("Invalid query parameter [code].")
-
-        if error:
-            raise TypeError("Invalid query parameter [error].")
-
-        if error_description:
-            raise TypeError("Invalid query parameter [error_description].")
-
-        if tenant_custom_domain_param:
-            raise TypeError("Invalid query parameter [tenant_custom_domain].")
+        if not param_state or not isinstance(param_state, str):
+            raise TypeError("Invalid query parameter [state] passed from Wristband during callback")
 
         # 3) Resolve tenant domain name
         resolved_tenant_domain_name: str = self._resolve_tenant_domain_name(
@@ -252,6 +240,9 @@ class Auth:
             # Otherwise raise an exception
             raise ValueError(f"OAuth error: {error}. Description: {error_description}")
 
+        if code is None:
+            raise ValueError("Invalid query parameter [code] passed from Wristband during callback")
+        
         #    Here you would call your Wristband token endpoint. Example:
         token_response: TokenResponse = self.api.get_tokens(
             code=code,
@@ -328,12 +319,12 @@ class Auth:
         # Handle cases where we should redirect to app login
         if not tenant_custom_domain:
             host_root_domain: str = host.split(".")[-1]
-            if self.parse_tenant_from_root_domain is not None and host_root_domain != self.parse_tenant_from_root_domain:
+            if self.parse_tenant_from_root_domain and host_root_domain != self.parse_tenant_from_root_domain:
                 res.headers["Location"] = (
                     f"{app_login_url}?client_id={self.client_id}"
                 )
                 return res
-            if self.parse_tenant_from_root_domain is None and not tenant_domain_name:
+            if not self.parse_tenant_from_root_domain and not tenant_domain_name:
                 res.headers["Location"] = (
                     f"{app_login_url}?client_id={self.client_id}"
                 )
@@ -420,7 +411,7 @@ class Auth:
         self, req: Request, parse_tenant_from_root_domain: Optional[str]
     ) -> str:           
 
-        if parse_tenant_from_root_domain is not None:
+        if parse_tenant_from_root_domain:
             host = str(req.url.netloc)
 
             if not host.endswith(parse_tenant_from_root_domain):
