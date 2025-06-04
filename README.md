@@ -50,3 +50,7 @@ python -m pytest
 python -m pytest tests/test_auth.py
 python -m pytest tests/test_api.py
 ```
+***TEST COVERAGE**
+```bash
+pytest --cov=wristband tests/
+```
