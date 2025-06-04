@@ -32,6 +32,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
       
+      - name: Install test dependencies and run tests
+        run: |
+          pip install -e ".[dev]"
+          python -m pytest
+          
       - name: Check version changes and bump if needed
         run: |
           # Check if version line in pyproject.toml has changed

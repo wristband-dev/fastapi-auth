@@ -39,3 +39,14 @@ poetry version major
 ```bash
 poetry publish
 ```
+
+## Testing
+**RUN ALL TESTS**
+```bash
+python -m pytest
+```
+**RUN INDIVIDUAL TESTS**
+```bash
+python -m pytest tests/test_auth.py
+python -m pytest tests/test_api.py
+```
