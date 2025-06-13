@@ -7,6 +7,7 @@ from enum import Enum
 # AUTH CONFIG MODELS
 ########################################
 
+
 @dataclass
 class AuthConfig:
     client_id: str
@@ -22,9 +23,11 @@ class AuthConfig:
     parse_tenant_from_root_domain: Optional[str] = None
     scopes: List[str] = field(default_factory=lambda: ['openid', 'offline_access', 'email'])
 
+
 ########################################
 # LOGIN MODELS
 ########################################
+
 
 @dataclass
 class OAuthAuthorizeUrlConfig:
@@ -40,6 +43,7 @@ class OAuthAuthorizeUrlConfig:
     tenant_domain_name: Optional[str] = None
     is_application_custom_domain_active: Optional[bool] = False
 
+
 @dataclass
 class LoginState:
     state: str
@@ -51,15 +55,18 @@ class LoginState:
     def to_dict(self) -> dict[str, str | dict[str, str]]:
         return asdict(self)
 
+
 @dataclass
 class LoginConfig:
     custom_state: Optional[dict[str, Any]] = None
     default_tenant_custom_domain: Optional[str] = None
     default_tenant_domain: Optional[str] = None
 
+
 ########################################
 # CALLBACK MODELS
 ########################################
+
 
 class CallbackResultType(Enum):
     """
@@ -68,7 +75,9 @@ class CallbackResultType(Enum):
     COMPLETED = 'COMPLETED'
     REDIRECT_REQUIRED = 'REDIRECT_REQUIRED'
 
+
 UserInfo = dict[str, Any]
+
 
 @dataclass
 class CallbackData:
@@ -77,7 +86,6 @@ class CallbackData:
     expires_in: int
     tenant_domain_name: str
     user_info: UserInfo
-
     custom_state: Optional[dict[str, Any]]
     refresh_token: Optional[str]
     return_url: Optional[str]
@@ -85,6 +93,7 @@ class CallbackData:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
 
 @dataclass
 class TokenData:
@@ -102,11 +111,13 @@ class TokenData:
             refresh_token=token_response.refresh_token
         )
 
+
 @dataclass
 class CallbackResult:
     callback_data: Optional[CallbackData]
     type: CallbackResultType
     redirect_response: Optional[RedirectResponse]
+
 
 @dataclass
 class TokenResponse:
@@ -128,9 +139,11 @@ class TokenResponse:
             scope=response['scope']
         )
 
+
 ########################################
 # LOGOUT MODELS
 ########################################
+
 
 @dataclass
 class LogoutConfig:

@@ -31,6 +31,7 @@ from .utils import SessionEncryptor
 _logger: logging.Logger = logging.getLogger(__name__)
 _tenant_domain_token: str = "{tenant_domain}"
 
+
 class WristbandAuth:
     """
     WristbandAuth provides methods for seamless interaction with Wristband for authenticating application users.
@@ -68,14 +69,26 @@ class WristbandAuth:
             raise ValueError("The [redirect_uri] config must have a value.")
         if auth_config.parse_tenant_from_root_domain and auth_config.parse_tenant_from_root_domain.strip():
             if _tenant_domain_token not in auth_config.login_url:
-                raise ValueError("The [login_url] must contain the '{tenant_domain}' token when using [parse_tenant_from_root_domain].")
+                raise ValueError(
+                    "The [login_url] must contain the '{tenant_domain}' token when using "
+                    "[parse_tenant_from_root_domain]."
+                )
             if _tenant_domain_token not in auth_config.redirect_uri:
-                raise ValueError("The [redirect_uri] must contain the '{tenant_domain}' token when using [parse_tenant_from_root_domain].")
+                raise ValueError(
+                    "The [redirect_uri] must contain the '{tenant_domain}' token when using "
+                    "[parse_tenant_from_root_domain]."
+                )
         else:
             if _tenant_domain_token in auth_config.login_url:
-                raise ValueError("The [login_url] cannot contain the '{tenant_domain}' token when [parse_tenant_from_root_domain] is not set.")
+                raise ValueError(
+                    "The [login_url] cannot contain the '{tenant_domain}' token when "
+                    "[parse_tenant_from_root_domain] is not set."
+                )
             if _tenant_domain_token in auth_config.redirect_uri:
-                raise ValueError("The [redirect_uri] cannot contain the '{tenant_domain}' token when [parse_tenant_from_root_domain] is not set.")
+                raise ValueError(
+                    "The [redirect_uri] cannot contain the '{tenant_domain}' token when "
+                    "[parse_tenant_from_root_domain] is not set."
+                )
 
         self.client_id: str = auth_config.client_id
         self.client_secret: str = auth_config.client_secret
@@ -116,7 +129,7 @@ class WristbandAuth:
         - return_url: The URL to redirect the user to after authentication.
         - tenant_custom_domain: The tenant-specific custom domain, if applicable. Used as the domain
           for the Authorize URL when present.
-        - tenant_domain: The tenant's domain name. Used as a subdomain or vanity domain in the 
+        - tenant_domain: The tenant's domain name. Used as a subdomain or vanity domain in the
           Authorize URL if not using tenant custom domains.
 
         Args:
@@ -247,13 +260,13 @@ class WristbandAuth:
         if self.parse_tenant_from_root_domain:
             tenant_login_url: str = self.login_url.replace("{tenant_domain}", resolved_tenant_domain_name)
         else:
-            tenant_login_url: str = (f"{self.login_url}?tenant_domain={resolved_tenant_domain_name}")
+            tenant_login_url = (f"{self.login_url}?tenant_domain={resolved_tenant_domain_name}")
 
         # If the tenant_custom_domain is set, add that query param
         if tenant_custom_domain_param:
             # If we already used "?" above, use "&"" instead
             connector: Literal["&"] | Literal["?"] = "&" if "?" in tenant_login_url else "?"
-            tenant_login_url: str = f"{tenant_login_url}{connector}tenant_custom_domain={tenant_custom_domain_param}"
+            tenant_login_url = f"{tenant_login_url}{connector}tenant_custom_domain={tenant_custom_domain_param}"
 
         # Retrieve and decrypt the login state cookie
         _, login_state_cookie_val = self._get_login_state_cookie(req)
@@ -287,7 +300,7 @@ class WristbandAuth:
 
         if code is None:
             raise ValueError("Invalid query parameter [code] passed from Wristband during callback")
-        
+
         try:
             # Call Wristband Token API
             token_response: TokenResponse = self.wristband_api.get_tokens(
@@ -355,32 +368,31 @@ class WristbandAuth:
 
         # Domain priority order resolution:
         # 1) If the LogoutConfig has a tenant custom domain explicitly defined, use that.
-        # 2) If the LogoutConfig has a tenant domain defined, then use that.
-        # 3) If the tenant_custom_domain query param exists, then use that.
-        # 4a) If tenant subdomains are enabled, get the tenant domain from the host.
-        # 4b) Otherwise, if tenant subdomains are not enabled, then look for it in the tenant_domain query param.
-        # Otherwise, fallback to app login URL (or custom logout redirect URL) if tenant cannot be determined.
         if config.tenant_custom_domain and config.tenant_custom_domain.strip():
             res.headers["Location"] = f"https://{config.tenant_custom_domain}{logout_path}"
             return res
 
+        # 2) If the LogoutConfig has a tenant domain defined, then use that.
         if config.tenant_domain_name and config.tenant_domain_name.strip():
             res.headers["Location"] = (
                 f"https://{config.tenant_domain_name}{separator}{self.wristband_application_vanity_domain}{logout_path}"
             )
             return res
 
+        # 3) If the tenant_custom_domain query param exists, then use that.
         if tenant_custom_domain and tenant_custom_domain.strip():
             res.headers["Location"] = f"https://{tenant_custom_domain}{logout_path}"
             return res
 
+        # 4a) If tenant subdomains are enabled, get the tenant domain from the host.
+        # 4b) Otherwise, if tenant subdomains are not enabled, then look for it in the tenant_domain query param.
         if tenant_domain_name and tenant_domain_name.strip():
             res.headers["Location"] = (
                 f"https://{tenant_domain_name}{separator}{self.wristband_application_vanity_domain}{logout_path}"
             )
             return res
 
-        # Construct app login URL
+        # Otherwise, fallback to app login URL (or custom logout redirect URL) if tenant cannot be determined.
         app_login_url: str = (
             self.custom_application_login_page_url
             or f"https://{self.wristband_application_vanity_domain}/login"
@@ -513,7 +525,7 @@ class WristbandAuth:
         random_bytes = secrets.token_bytes(length)
         random_string = base64.urlsafe_b64encode(random_bytes).decode("utf-8")
         return random_string.rstrip("=")[:length]
-    
+
     def _clear_oldest_login_state_cookie(
         self, req: Request, res: Response, dangerously_disable_secure_cookies: bool
     ) -> None:
@@ -602,12 +614,20 @@ class WristbandAuth:
         if config.tenant_custom_domain:
             return f"https://{config.tenant_custom_domain}{path_and_query}"
         if config.tenant_domain_name:
-            return f"https://{config.tenant_domain_name}{separator}{config.wristband_application_vanity_domain}{path_and_query}"
+            return (
+                f"https://{config.tenant_domain_name}"
+                f"{separator}{config.wristband_application_vanity_domain}"
+                f"{path_and_query}"
+            )
         if config.default_tenant_custom_domain:
             return f"https://{config.default_tenant_custom_domain}{path_and_query}"
 
         # By this point, we know the tenant domain name has already resolved properly, so just return the default.
-        return f"https://{config.default_tenant_domain_name}{separator}{config.wristband_application_vanity_domain}{path_and_query}"
+        return (
+            f"https://{config.default_tenant_domain_name}"
+            f"{separator}{config.wristband_application_vanity_domain}"
+            f"{path_and_query}"
+        )
 
     def _assert_single_param(self, req: Request, param: str) -> str | None:
         values = req.query_params.getlist(param)

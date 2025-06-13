@@ -5,6 +5,7 @@ import httpx
 from .exception import InvalidGrantError, WristbandError
 from .models import TokenResponse, UserInfo
 
+
 class WristbandApiClient:
     def __init__(self, wristband_application_vanity_domain: str, client_id: str, client_secret: str) -> None:
         if not wristband_application_vanity_domain or not wristband_application_vanity_domain.strip():
@@ -16,9 +17,9 @@ class WristbandApiClient:
 
         credentials: str = f"{client_id}:{client_secret}"
         encoded_credentials: str = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
-        
+
         self.base_url: str = f'https://{wristband_application_vanity_domain}/api/v1'
-        self.headers: dict[str, str] = { 
+        self.headers: dict[str, str] = {
             'Authorization': f'Basic {encoded_credentials}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
@@ -32,7 +33,7 @@ class WristbandApiClient:
             raise ValueError("Code verifier is required")
 
         response: httpx.Response = httpx.post(
-            self.base_url + '/oauth2/token', 
+            self.base_url + '/oauth2/token',
             headers=self.headers,
             data={
                 'grant_type': 'authorization_code',
@@ -54,7 +55,7 @@ class WristbandApiClient:
     def get_userinfo(self, access_token: str) -> UserInfo:
         response: httpx.Response = httpx.get(
             self.base_url + '/oauth2/userinfo',
-            headers={ 'Authorization': f'Bearer {access_token}' }
+            headers={'Authorization': f'Bearer {access_token}'}
         )
         return response.json()
 

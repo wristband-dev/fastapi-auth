@@ -10,6 +10,7 @@ class WristbandError(Exception):
     def get_error_description(self) -> str:
         return self.error_description
 
+
 class InvalidGrantError(WristbandError):
     def __init__(self, error_description: str = "") -> None:
         super().__init__("invalid_grant", error_description)
