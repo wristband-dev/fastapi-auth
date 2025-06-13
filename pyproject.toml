@@ -1,25 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "wristband"
-version = "4.3.3"
+name = "wristband-fastapi-auth"
+version = "0.1.0"
 description = "SDK for integrating your Python FastAPI application with Wristband. Handles user authentication and token management."
+readme = "README_PYPI.md"
+license = {text = "MIT"}
 authors = [
-    {name = "fddiferd",email = "fddiferd@gmail.com"}
+    {name = "Wristband", email = "support@wristband.dev"},
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "cryptography (>=44.0.3,<45.0.0)",
-    "requests (>=2.32.3,<3.0.0)",
-    "fastapi (>=0.115.12,<0.116.0)",
+    "cryptography>=44.0.3,<45.0.0",
+    "fastapi>=0.115.12,<0.116.0",
+    "httpx>=0.28.1,<0.29.0",
 ]
-license = {text = "MIT"}
-readme = "README.md"
+keywords = [
+    "api",
+    "auth",
+    "authentication",
+    "authorization",
+    "fastapi",
+    "jwt",
+    "multi-tenant",
+    "multi-tenancy",
+    "oauth",
+    "oidc",
+    "sdk",
+    "secure",
+    "security",
+    "wristband"
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Security :: Authentication",
+    "Development Status :: 4 - Beta",
 ]
 
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.package-data]
+"wristband" = ["py.typed"]
