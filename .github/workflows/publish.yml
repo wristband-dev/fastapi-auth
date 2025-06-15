@@ -1,71 +1,46 @@
 name: Publish to PyPI
 
 on:
-  pull_request:
-    types: [closed]
-    branches:
-      - main
+  push:
+    tags:
+      - "v*.*.*"
 
 jobs:
-  publish:
-    if: github.event.pull_request.merged == true
+  release:
     runs-on: ubuntu-latest
-    # Add permissions to allow pushing to the repository
-    permissions:
-      contents: write
-    env:
-      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          # Use token with push permissions
-          token: ${{ secrets.GITHUB_TOKEN }}
-      
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
+
+  pypi-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
-          
-      - name: Install build and publish dependencies
+
+      - name: Install build tools
         run: |
           python -m pip install --upgrade pip
           pip install build twine
-      
-      - name: Check version changes and bump if needed
-        run: |
-          # Check if version line in pyproject.toml has changed
-          if git diff origin/main...HEAD -- pyproject.toml | grep -q "^[+|-]version"; then
-            echo "Version already updated in PR"
-          else
-            echo "No version change detected, bumping patch version"
-            # Get current version
-            CURRENT_VERSION=$(grep -m 1 "version = " pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-            
-            # Split the version into major.minor.patch
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-            
-            # Increment patch version
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-            
-            # Update version in pyproject.toml
-            sed -i "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" pyproject.toml
-            echo "Version bumped from $CURRENT_VERSION to $NEW_VERSION"
-            
-            # Commit the version change
-            git config --global user.name "GitHub Actions Bot"
-            git config --global user.email "actions@github.com"
-            git add pyproject.toml
-            git commit -m "Bump version to $NEW_VERSION [skip ci]"
-            # Push directly to main branch
-            git push origin HEAD:main
-          fi
-          
-      - name: Build and publish
+
+      - name: Clean old builds
+        run: rm -rf dist/
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          python -m build
-          python -m twine upload dist/* 
+        run: python -m twine upload dist/*
