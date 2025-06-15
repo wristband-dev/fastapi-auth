@@ -118,7 +118,7 @@ class WristbandAuth:
 
         self._login_state_encryptor = SessionEncryptor(secret_key=auth_config.login_state_secret)
 
-    def login(self, req: Request, config: LoginConfig = LoginConfig()) -> Response:
+    async def login(self, req: Request, config: LoginConfig = LoginConfig()) -> Response:
         """
         Initiates a login request by redirecting to Wristband. Constructs an OAuth2 Authorization
         Request to begin the Authorization Code flow.
@@ -208,7 +208,7 @@ class WristbandAuth:
         # Perform the redirect to Wristband's Authorize Endpoint.
         return authorize_response
 
-    def callback(self, req: Request) -> CallbackResult:
+    async def callback(self, req: Request) -> CallbackResult:
         """
         Handles the OAuth2 callback from Wristband. Exchanges the authorization code for tokens
         and retrieves user information for the authenticated user.
@@ -271,14 +271,11 @@ class WristbandAuth:
         # Retrieve and decrypt the login state cookie
         _, login_state_cookie_val = self._get_login_state_cookie(req)
 
-        # Create a login redirect response in the event of any edge cases.
-        login_redirect_res = RedirectResponse(url=tenant_login_url, status_code=302)
-        login_redirect_res.headers["Cache-Control"] = "no-store"
-        login_redirect_res.headers["Pragma"] = "no-cache"
+        # Create a redirect result in the event of any edge cases.
         redirect_callback_result = CallbackResult(
             type=CallbackResultType.REDIRECT_REQUIRED,
             callback_data=None,
-            redirect_response=login_redirect_res,
+            redirect_url=tenant_login_url,
         )
 
         # No valid cookie, we cannot verify the request
@@ -303,19 +300,19 @@ class WristbandAuth:
 
         try:
             # Call Wristband Token API
-            token_response: TokenResponse = self.wristband_api.get_tokens(
+            token_response: TokenResponse = await self.wristband_api.get_tokens(
                 code=code,
                 redirect_uri=login_state.redirect_uri,
                 code_verifier=login_state.code_verifier,
             )
 
             # Call Wristband Userinfo API
-            userinfo: UserInfo = self.wristband_api.get_userinfo(token_response.access_token)
+            userinfo: UserInfo = await self.wristband_api.get_userinfo(token_response.access_token)
 
             # Return the callback data and result
             return CallbackResult(
                 type=CallbackResultType.COMPLETED,
-                redirect_response=None,
+                redirect_url=None,
                 callback_data=CallbackData(
                     access_token=token_response.access_token,
                     id_token=token_response.id_token,
@@ -333,7 +330,35 @@ class WristbandAuth:
         except Exception as ex:
             raise ex
 
-    def logout(self, req: Request, config: LogoutConfig = LogoutConfig()) -> Response:
+    async def create_callback_response(self, req: Request, redirect_url: str) -> Response:
+        """
+        Constructs the redirect response to your application and cleans up the login state.
+
+        Args:
+            req (Request): The FastAPI request object.
+            redirect_url (str): The location for your application that you want to send users to.
+
+        Returns:
+            Response: The FastAPI Response that is performing the URL redirect to your desired application URL.
+        """
+        if not redirect_url:
+            raise TypeError("redirect_url cannot be null or empty")
+
+        redirect_response = RedirectResponse(redirect_url, status_code=302)
+        redirect_response.headers["Cache-Control"] = "no-store"
+        redirect_response.headers["Pragma"] = "no-cache"
+
+        login_state_cookie_name, _ = self._get_login_state_cookie(req)
+        if login_state_cookie_name:
+            self._clear_login_state_cookie(
+                redirect_response,
+                login_state_cookie_name,
+                self.dangerously_disable_secure_cookies,
+            )
+
+        return redirect_response
+
+    async def logout(self, req: Request, config: LogoutConfig = LogoutConfig()) -> Response:
         """
         Logs the user out by revoking their refresh token (if provided) and constructing a redirect
         URL to Wristband's Logout Endpoint.
@@ -349,7 +374,7 @@ class WristbandAuth:
         # Revoke refresh token, if present
         if config.refresh_token:
             try:
-                self.wristband_api.revoke_refresh_token(config.refresh_token)
+                await self.wristband_api.revoke_refresh_token(config.refresh_token)
             except Exception as e:
                 # No need to block logout execution if revoking fails
                 _logger.warning(f"Revoking the refresh token failed during logout: {e}")
@@ -400,7 +425,9 @@ class WristbandAuth:
         res.headers["Location"] = config.redirect_url or f"{app_login_url}?client_id={self.client_id}"
         return res
 
-    def refresh_token_if_expired(self, refresh_token: Optional[str], expires_at: Optional[int]) -> TokenData | None:
+    async def refresh_token_if_expired(
+        self, refresh_token: Optional[str], expires_at: Optional[int]
+    ) -> TokenData | None:
         """
         Checks if the user's access token has expired and refreshes the token, if necessary.
 
@@ -423,7 +450,7 @@ class WristbandAuth:
         # Try up to 3 times to perform a token refresh
         for attempt in range(self._token_refresh_retries + 1):
             try:
-                token_response: TokenResponse = self.wristband_api.refresh_token(refresh_token)
+                token_response: TokenResponse = await self.wristband_api.refresh_token(refresh_token)
                 return TokenData.from_token_response(token_response)
             except InvalidGrantError as e:
                 # Do not retry, bail immediately
@@ -502,24 +529,6 @@ class WristbandAuth:
             max_age=0,
             secure=not dangerously_disable_secure_cookies
         )
-
-    def _create_callback_response(self, req: Request, redirect_url: str) -> Response:
-        if not redirect_url:
-            raise TypeError("redirect_url cannot be null or empty")
-
-        redirect_response = RedirectResponse(redirect_url, status_code=302)
-        redirect_response.headers["Cache-Control"] = "no-store"
-        redirect_response.headers["Pragma"] = "no-cache"
-
-        login_state_cookie_name, _ = self._get_login_state_cookie(req)
-        if login_state_cookie_name:
-            self._clear_login_state_cookie(
-                redirect_response,
-                login_state_cookie_name,
-                self.dangerously_disable_secure_cookies,
-            )
-
-        return redirect_response
 
     def _generate_random_string(self, length: int = 32) -> str:
         random_bytes = secrets.token_bytes(length)

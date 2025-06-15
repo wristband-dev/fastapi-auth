@@ -24,7 +24,9 @@ class WristbandApiClient:
             'Content-Type': 'application/x-www-form-urlencoded'
         }
 
-    def get_tokens(self, code: str, redirect_uri: str, code_verifier: str) -> TokenResponse:
+        self.client = httpx.AsyncClient()
+
+    async def get_tokens(self, code: str, redirect_uri: str, code_verifier: str) -> TokenResponse:
         if not code or not code.strip():
             raise ValueError("Authorization code is required")
         if not redirect_uri or not redirect_uri.strip():
@@ -32,7 +34,7 @@ class WristbandApiClient:
         if not code_verifier or not code_verifier.strip():
             raise ValueError("Code verifier is required")
 
-        response: httpx.Response = httpx.post(
+        response: httpx.Response = await self.client.post(
             self.base_url + '/oauth2/token',
             headers=self.headers,
             data={
@@ -52,15 +54,15 @@ class WristbandApiClient:
 
         return TokenResponse.from_api_response(response.json())
 
-    def get_userinfo(self, access_token: str) -> UserInfo:
-        response: httpx.Response = httpx.get(
+    async def get_userinfo(self, access_token: str) -> UserInfo:
+        response: httpx.Response = await self.client.get(
             self.base_url + '/oauth2/userinfo',
             headers={'Authorization': f'Bearer {access_token}'}
         )
         return response.json()
 
-    def refresh_token(self, refresh_token: str) -> TokenResponse:
-        response: httpx.Response = httpx.post(
+    async def refresh_token(self, refresh_token: str) -> TokenResponse:
+        response: httpx.Response = await self.client.post(
             self.base_url + '/oauth2/token',
             headers=self.headers,
             data={
@@ -79,8 +81,8 @@ class WristbandApiClient:
 
         return TokenResponse.from_api_response(response.json())
 
-    def revoke_refresh_token(self, refresh_token: str) -> None:
-        httpx.post(
+    async def revoke_refresh_token(self, refresh_token: str) -> None:
+        await self.client.post(
             self.base_url + '/oauth2/revoke',
             headers=self.headers,
             data={
