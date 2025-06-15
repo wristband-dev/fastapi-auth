@@ -567,8 +567,8 @@ def __init__(self, auth_config: AuthConfig) -> None:
 
 ### `async def login(self, req: Request, config: LoginConfig = LoginConfig()) -> Response:`
 
-```ts
-await login(req, res);
+```python
+response: Response = await wristband_auth.login(req=request)
 ```
 
 Wristband requires that your application specify a Tenant-Level domain when redirecting to the Wristband Authorize Endpoint when initiating an auth request. When the frontend of your application redirects the user to your FastAPI Login Endpoint, there are two ways to accomplish getting the `tenant_domain_name` information: passing a query parameter or using tenant subdomains.
@@ -706,7 +706,7 @@ The return URL is stored in the Login State Cookie, and you can choose to send u
 
 ### `async def callback(self, req: Request) -> CallbackResult:`
 
-```ts
+```python
 callback_result: CallbackResult = await wristband_auth.callback(req=request)
 response: Response = await wristband_auth.create_callback_response(request, redirect_url="https://yourapp.io/home")
 ```
@@ -900,7 +900,7 @@ response: Response = await wristband_auth.logout(
 
 ### `async def refresh_token_if_expired(self, refresh_token: Optional[str], expires_at: Optional[int]) -> TokenData | None:`
 
-```ts
+```python
 token_data: TokenData | None = await wristband_auth.refresh_token_if_expired(
     refresh_token="98yht308hf902hc90wh09",
     expires_at=1710707503788
