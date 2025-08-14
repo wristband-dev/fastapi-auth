@@ -4,18 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wristband-fastapi-auth"
-version = "0.1.1"
+version = "0.2.0"
 description = "SDK for integrating your Python FastAPI application with Wristband. Handles user authentication and token management."
 readme = "README_PYPI.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Wristband", email = "support@wristband.dev"},
 ]
 requires-python = ">=3.9"
 dependencies = [
     "cryptography>=44.0.3,<45.0.0",
-    "fastapi>=0.115.12,<0.116.0",
-    "httpx>=0.28.1,<0.29.0",
+    "fastapi>=0.100.0",
+    "httpx>=0.24.0",
 ]
 keywords = [
     "api",
@@ -35,22 +35,42 @@ keywords = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Security",
     "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "setuptools>=61",
     "pytest>=8.2.0,<9.0.0",
     "pytest-cov>=5.0.0,<6.0.0",
+    "pytest-httpx>=0.21.0",
+    "pytest-asyncio>=0.21.0",
     "mypy>=1.10.0",
     "types-jsonschema",
-    "flake8>=6.0.0,<7.0.0"
+    "flake8>=6.0.0,<7.0.0",
+    "flake8-pyproject>=1.2.0",
+    "pip-audit>=2.0.0",
+    "bandit>=1.7.0",
+    "build>=0.10.0",
+    "twine>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
 ]
+
+[project.urls]
+"Homepage" = "https://wristband.dev"
+"Repository" = "https://github.com/wristband-dev/fastapi-auth"
+"Documentation" = "https://docs.wristband.dev"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -63,7 +83,31 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.flake8]
 max-line-length = 120
 extend-ignore = ["E203", "W503"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+exclude = ["tests/"]
+
+[tool.black]
+line-length = 120
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]

@@ -1,4 +1,5 @@
 from .auth import WristbandAuth
+from .exceptions import WristbandError
 from .models import (
     AuthConfig,
     CallbackData,
@@ -9,7 +10,6 @@ from .models import (
     TokenData,
     UserInfo,
 )
-from .exception import WristbandError
 from .utils import SessionEncryptor
 
 # Explicitly define what's available for import

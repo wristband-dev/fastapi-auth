@@ -1,6 +1,8 @@
-from cryptography.fernet import Fernet
-import json
 import base64
+import json
+from typing import Any, Dict, Optional, cast
+
+from cryptography.fernet import Fernet
 
 
 class SessionEncryptor:
@@ -14,7 +16,7 @@ class SessionEncryptor:
     The secret key must be at least 32 characters to ensure sufficient entropy.
     """
 
-    def __init__(self, secret_key=None):
+    def __init__(self, secret_key: Optional[str] = None) -> None:
         """
         Initialize the SessionEncryptor with a secret key.
 
@@ -34,7 +36,7 @@ class SessionEncryptor:
         self.secret_key: bytes = base64.urlsafe_b64encode(key_bytes)
         self.cipher: Fernet = Fernet(self.secret_key)
 
-    def encrypt(self, data) -> str:
+    def encrypt(self, data: Dict[str, Any]) -> str:
         """
         Encrypt a dictionary of session data into a base64-encoded string.
 
@@ -54,7 +56,7 @@ class SessionEncryptor:
         encrypted: bytes = self.cipher.encrypt(json_data)
         return encrypted.decode()
 
-    def decrypt(self, encrypted_str: str) -> dict:
+    def decrypt(self, encrypted_str: str) -> Dict[str, Any]:
         """
         Decrypt an encrypted session string back into a dictionary.
 
@@ -72,5 +74,5 @@ class SessionEncryptor:
         if not encrypted_str:
             raise ValueError("Empty encrypted string cannot be decrypted")
 
-        decrypted_bytes = self.cipher.decrypt(encrypted_str.encode())
-        return json.loads(decrypted_bytes.decode())
+        decrypted_bytes: bytes = self.cipher.decrypt(encrypted_str.encode())
+        return cast(Dict[str, Any], json.loads(decrypted_bytes.decode()))

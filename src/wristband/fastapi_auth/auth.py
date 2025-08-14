@@ -1,25 +1,25 @@
 import base64
-from datetime import datetime
-import secrets
-import time
-from typing import Any, Literal, Optional
-from urllib.parse import urlencode
 import hashlib
 import logging
+import secrets
+import time
+from datetime import datetime
+from typing import Any, Literal, Optional, Tuple
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 
 from .client import WristbandApiClient
-from .exception import InvalidGrantError, WristbandError
+from .exceptions import InvalidGrantError, WristbandError
 from .models import (
+    AuthConfig,
     CallbackData,
     CallbackResult,
     CallbackResultType,
     LoginConfig,
     LoginState,
-    AuthConfig,
     LogoutConfig,
     OAuthAuthorizeUrlConfig,
     TokenData,
@@ -42,6 +42,7 @@ class WristbandAuth:
     - Logout a user from the application by revoking refresh tokens and redirecting to Wristband.
     - Checking for expired access tokens and refreshing them automatically, if necessary.
     """
+
     _cookie_prefix: str = "login#"
     _login_state_cookie_separator: str = "#"
     _token_refresh_retries = 2
@@ -63,6 +64,8 @@ class WristbandAuth:
             or len(auth_config.login_state_secret) < 32
         ):
             raise ValueError("The [login_state_secret] config must have a value of at least 32 characters.")
+        if auth_config.token_expiration_buffer is not None and auth_config.token_expiration_buffer < 0:
+            raise ValueError("The [token_expiration_buffer] config must be greater than or equal to 0.")
         if not auth_config.login_url or not auth_config.login_url.strip():
             raise ValueError("The [login_url] config must have a value.")
         if not auth_config.redirect_uri or not auth_config.redirect_uri.strip():
@@ -109,6 +112,9 @@ class WristbandAuth:
         )
         self.parse_tenant_from_root_domain: Optional[str] = auth_config.parse_tenant_from_root_domain
         self.scopes: list[str] = auth_config.scopes
+        self.token_expiration_buffer: int = (
+            auth_config.token_expiration_buffer if auth_config.token_expiration_buffer is not None else 60
+        )
 
         self.wristband_api = WristbandApiClient(
             wristband_application_vanity_domain=self.wristband_application_vanity_domain,
@@ -157,14 +163,13 @@ class WristbandAuth:
             ]
         ):
             app_login_url: str = (
-                self.custom_application_login_page_url
-                or f"https://{self.wristband_application_vanity_domain}/login"
+                self.custom_application_login_page_url or f"https://{self.wristband_application_vanity_domain}/login"
             )
             app_login_response: Response = RedirectResponse(
                 url=f"{app_login_url}?client_id={self.client_id}", status_code=302
             )
-            app_login_response.headers['Cache-Control'] = 'no-store'
-            app_login_response.headers['Pragma'] = 'no-cache'
+            app_login_response.headers["Cache-Control"] = "no-store"
+            app_login_response.headers["Pragma"] = "no-cache"
             return app_login_response
 
         # Create the login state which will be cached in a cookie so that it can be accessed in the callback.
@@ -185,13 +190,13 @@ class WristbandAuth:
                 tenant_domain_name=tenant_domain_name,
                 is_application_custom_domain_active=self.is_application_custom_domain_active,
                 wristband_application_vanity_domain=self.wristband_application_vanity_domain,
-            )
+            ),
         )
 
         # Create the redirect response
         authorize_response: Response = RedirectResponse(url=authorize_url, status_code=302)
-        authorize_response.headers['Cache-Control'] = 'no-store'
-        authorize_response.headers['Pragma'] = 'no-cache'
+        authorize_response.headers["Cache-Control"] = "no-store"
+        authorize_response.headers["Pragma"] = "no-cache"
 
         # Clear any stale login state cookies and add a new one for the current request.
         self._clear_oldest_login_state_cookie(req, authorize_response, self.dangerously_disable_secure_cookies)
@@ -231,11 +236,11 @@ class WristbandAuth:
             including login state, user info, or redirect behavior.
         """
         # Extract and validate Query Params from wristband callback
-        code: str | None = self._assert_single_param(req, "code")
-        param_state: str | None = self._assert_single_param(req, "state")
-        error: str | None = self._assert_single_param(req, "error")
-        error_description: str | None = self._assert_single_param(req, "error_description")
-        tenant_custom_domain_param: str | None = self._assert_single_param(req, "tenant_custom_domain")
+        code: Optional[str] = self._assert_single_param(req, "code")
+        param_state: Optional[str] = self._assert_single_param(req, "state")
+        error: Optional[str] = self._assert_single_param(req, "error")
+        error_description: Optional[str] = self._assert_single_param(req, "error_description")
+        tenant_custom_domain_param: Optional[str] = self._assert_single_param(req, "tenant_custom_domain")
 
         if not param_state or not isinstance(param_state, str):
             raise TypeError("Invalid query parameter [state] passed from Wristband during callback")
@@ -260,12 +265,12 @@ class WristbandAuth:
         if self.parse_tenant_from_root_domain:
             tenant_login_url: str = self.login_url.replace("{tenant_domain}", resolved_tenant_domain_name)
         else:
-            tenant_login_url = (f"{self.login_url}?tenant_domain={resolved_tenant_domain_name}")
+            tenant_login_url = f"{self.login_url}?tenant_domain={resolved_tenant_domain_name}"
 
         # If the tenant_custom_domain is set, add that query param
         if tenant_custom_domain_param:
             # If we already used "?" above, use "&"" instead
-            connector: Literal["&"] | Literal["?"] = "&" if "?" in tenant_login_url else "?"
+            connector: Literal["&", "?"] = "&" if "?" in tenant_login_url else "?"
             tenant_login_url = f"{tenant_login_url}{connector}tenant_custom_domain={tenant_custom_domain_param}"
 
         # Retrieve and decrypt the login state cookie
@@ -309,6 +314,10 @@ class WristbandAuth:
             # Call Wristband Userinfo API
             userinfo: UserInfo = await self.wristband_api.get_userinfo(token_response.access_token)
 
+            # Calculate token expiration buffer
+            expires_in = token_response.expires_in - self.token_expiration_buffer
+            expires_at = int((time.time() + expires_in) * 1000)
+
             # Return the callback data and result
             return CallbackResult(
                 type=CallbackResultType.COMPLETED,
@@ -316,7 +325,8 @@ class WristbandAuth:
                 callback_data=CallbackData(
                     access_token=token_response.access_token,
                     id_token=token_response.id_token,
-                    expires_in=token_response.expires_in,
+                    expires_at=expires_at,
+                    expires_in=expires_in,
                     tenant_domain_name=resolved_tenant_domain_name,
                     user_info=userinfo,
                     custom_state=login_state.custom_state,
@@ -341,7 +351,7 @@ class WristbandAuth:
         Returns:
             Response: The FastAPI Response that is performing the URL redirect to your desired application URL.
         """
-        if not redirect_url:
+        if not redirect_url or not redirect_url.strip():
             raise TypeError("redirect_url cannot be null or empty")
 
         redirect_response = RedirectResponse(redirect_url, status_code=302)
@@ -382,7 +392,7 @@ class WristbandAuth:
         # Get host and determine tenant domain
         tenant_domain_name: str = self._resolve_tenant_domain_name(req, self.parse_tenant_from_root_domain)
         tenant_custom_domain: str = self._resolve_tenant_custom_domain_param(req)
-        separator: Literal["."] | Literal["-"] = "." if self.is_application_custom_domain_active else "-"
+        separator: Literal[".", "-"] = "." if self.is_application_custom_domain_active else "-"
         redirect_url = f"&redirect_url={config.redirect_url}" if config.redirect_url else ""
         logout_path = f"/api/v1/logout?client_id={self.client_id}{redirect_url}"
 
@@ -419,15 +429,14 @@ class WristbandAuth:
 
         # Otherwise, fallback to app login URL (or custom logout redirect URL) if tenant cannot be determined.
         app_login_url: str = (
-            self.custom_application_login_page_url
-            or f"https://{self.wristband_application_vanity_domain}/login"
+            self.custom_application_login_page_url or f"https://{self.wristband_application_vanity_domain}/login"
         )
         res.headers["Location"] = config.redirect_url or f"{app_login_url}?client_id={self.client_id}"
         return res
 
     async def refresh_token_if_expired(
         self, refresh_token: Optional[str], expires_at: Optional[int]
-    ) -> TokenData | None:
+    ) -> Optional[TokenData]:
         """
         Checks if the user's access token has expired and refreshes the token, if necessary.
 
@@ -436,7 +445,7 @@ class WristbandAuth:
             expires_at (Optional[int]): Unix timestamp in milliseconds indicating when the current access token expires.
 
         Returns:
-            TokenData | None: The refreshed token data if a new token was obtained, otherwise None.
+            Optional[TokenData]: The refreshed token data if a new token was obtained, otherwise None.
         """
         if not refresh_token or not refresh_token.strip():
             raise TypeError("Refresh token must be a valid string")
@@ -451,7 +460,18 @@ class WristbandAuth:
         for attempt in range(self._token_refresh_retries + 1):
             try:
                 token_response: TokenResponse = await self.wristband_api.refresh_token(refresh_token)
-                return TokenData.from_token_response(token_response)
+
+                # Calculate token expiration buffer
+                expires_in = token_response.expires_in - self.token_expiration_buffer
+                expires_at = int((time.time() + expires_in) * 1000)
+
+                return TokenData(
+                    access_token=token_response.access_token,
+                    id_token=token_response.id_token,
+                    expires_in=expires_in,
+                    expires_at=expires_at,
+                    refresh_token=token_response.refresh_token,
+                )
             except InvalidGrantError as e:
                 # Do not retry, bail immediately
                 raise e
@@ -469,6 +489,13 @@ class WristbandAuth:
                     raise WristbandError("unexpected_error", "Unexpected Error")
 
                 # Wait before retrying
+                time.sleep(self._token_refresh_retry_timeout)
+            except Exception:
+                # Handle all other exceptions with retry logic. On last attempt, raise the error.
+                if attempt == self._token_refresh_retries:
+                    raise WristbandError("unexpected_error", "Unexpected Error")
+
+                # Wait before retrying.
                 time.sleep(self._token_refresh_retry_timeout)
 
         # Safety check that should never happen
@@ -527,7 +554,7 @@ class WristbandAuth:
             httponly=True,
             samesite="lax",
             max_age=0,
-            secure=not dangerously_disable_secure_cookies
+            secure=not dangerously_disable_secure_cookies,
         )
 
     def _generate_random_string(self, length: int = 32) -> str:
@@ -539,9 +566,7 @@ class WristbandAuth:
         self, req: Request, res: Response, dangerously_disable_secure_cookies: bool
     ) -> None:
         cookies = req.cookies
-        login_cookie_names = [
-            name for name in cookies if name.startswith(self._cookie_prefix)
-        ]
+        login_cookie_names = [name for name in cookies if name.startswith(self._cookie_prefix)]
 
         if len(login_cookie_names) >= 3:
             timestamps = []
@@ -556,10 +581,7 @@ class WristbandAuth:
                 parts = cookie_name.split(self._login_state_cookie_separator)
                 if len(parts) > 2 and parts[2] not in newest_timestamps:
                     res.delete_cookie(
-                        cookie_name,
-                        httponly=True,
-                        secure=not dangerously_disable_secure_cookies,
-                        path="/"
+                        cookie_name, httponly=True, secure=not dangerously_disable_secure_cookies, path="/"
                     )
 
     def _encrypt_login_state(self, login_state: LoginState) -> str:
@@ -576,7 +598,7 @@ class WristbandAuth:
         state: str,
         encrypted_login_state: str,
         disable_secure: bool = False,
-    ):
+    ) -> None:
         res.set_cookie(
             key=f"{self._cookie_prefix}{state}{self._login_state_cookie_separator}{str(int(1000 * time.time()))}",
             value=encrypted_login_state,
@@ -611,7 +633,7 @@ class WristbandAuth:
             query_params["login_hint"] = login_hint_list[0]
 
         # Separator changes to a period if using an app-level custom domain with tenant subdomains
-        separator: Literal["."] | Literal["-"] = "." if config.is_application_custom_domain_active else "-"
+        separator: Literal[".", "-"] = "." if config.is_application_custom_domain_active else "-"
         path_and_query: str = f"/api/v1/oauth2/authorize?{urlencode(query_params)}"
 
         # Domain priority order resolution:
@@ -638,15 +660,15 @@ class WristbandAuth:
             f"{path_and_query}"
         )
 
-    def _assert_single_param(self, req: Request, param: str) -> str | None:
+    def _assert_single_param(self, req: Request, param: str) -> Optional[str]:
         values = req.query_params.getlist(param)
         if len(values) > 1:
             raise TypeError(f"Duplicate query parameter [{param}] passed from Wristband during callback")
         return values[0] if values else None
 
-    def _get_login_state_cookie(self, req: Request) -> tuple[str | None, str | None]:
+    def _get_login_state_cookie(self, req: Request) -> Tuple[Optional[str], Optional[str]]:
         cookies: dict[str, str] = req.cookies
-        state: str | None = req.query_params.get("state")
+        state: Optional[str] = req.query_params.get("state")
         param_state: str = state if state else ""
 
         matching_login_cookie_names: list[str] = [

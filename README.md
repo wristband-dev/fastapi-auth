@@ -42,6 +42,7 @@ You can learn more about how authentication works in Wristband in our documentat
 
 ## Table of Contents
 
+- [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
   - [1) Initialize the SDK](#1-initialize-the-sdk)
@@ -55,6 +56,12 @@ You can learn more about how authentication works in Wristband in our documentat
 - [Wristband Auth Configuration Options](#wristband-auth-configuration-options)
 - [API](#api)
 - [Questions](#questions)
+
+<br/>
+
+## Requirements
+
+This SDK is designed to work for Python version 3.9+ and FastAPI version 0.100.0+.
 
 <br/>
 
@@ -120,21 +127,22 @@ You can borrow this example below to see how one might establish cookie-based se
 ```python
 # src/models/session_data.py
 from dataclasses import dataclass, asdict
-from typing import Any
+from typing import Any, Optional
 
 @dataclass
 class SessionData:
     is_authenticated: bool = False
     access_token: str = ""
     expires_at: int = 0
-    refresh_token: str | None = None
+    refresh_token: Optional[str] = None
     user_id: str = ""
     tenant_id: str = ""
     idp_name: str = ""
     tenant_domain_name: str = ""
+    tenant_custom_domain: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, str] = asdict(self)
+        data: dict[str, Any] = asdict(self)
         return data
 
     @staticmethod
@@ -146,18 +154,20 @@ class SessionData:
         return SessionData()
 ```
 
-#### b) Create an encrypted session middleware
+#### b) Create an encrypted cookie session middleware
 ```python
+# src/middleware/session_middleware.py
+import logging
+from typing import Any, Awaitable, Callable, Literal
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Literal, cast
-import logging
 from wristband.fastapi_auth import SessionEncryptor
 from models.session_data import SessionData
 
-__all__ = ['EncryptedSessionMiddleware']
+__all__ = ["EncryptedSessionMiddleware"]
 logger = logging.getLogger(__name__)
 SameSiteOptions = Literal["lax", "strict", "none"]
+
 
 class _SessionManager:
     def __init__(
@@ -167,8 +177,8 @@ class _SessionManager:
         max_age: int,
         path: str,
         same_site: SameSiteOptions,
-        secure: bool
-    ):
+        secure: bool,
+    ) -> None:
         self.encryptor = encryptor
         self.cookie_name = cookie_name
         self.max_age = max_age
@@ -177,13 +187,13 @@ class _SessionManager:
         self.http_only = True
         self.secure = secure
         self._session_data: SessionData = SessionData.empty()
-    
+
     def get(self) -> SessionData:
         return self._session_data
-    
+
     def set_data(self, session_data: SessionData) -> None:
         self._session_data = session_data
-    
+
     def update(self, response: Response, session_data: SessionData) -> None:
         self._session_data = session_data
         encrypted_value = self.encryptor.encrypt(session_data.to_dict())
@@ -194,50 +204,53 @@ class _SessionManager:
             path=self.path,
             secure=self.secure,
             httponly=self.http_only,
-            samesite=self.same_site
+            samesite=self.same_site,
         )
-    
+
     def delete(self, response: Response) -> None:
         self._session_data = SessionData.empty()
         response.set_cookie(
             key=self.cookie_name,
-            value='',
+            value="",
             max_age=0,
             path=self.path,
             secure=self.secure,
             httponly=self.http_only,
-            samesite=self.same_site
+            samesite=self.same_site,
         )
+
 
 class EncryptedSessionMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
-        app,
+        app: Any,
         cookie_name: str = "session",
         secret_key: str = "",
-        max_age: int = 1800,
+        max_age: int = 1800,  # 30 minutes
         path: str = "/",
         same_site: Literal["lax", "strict", "none"] = "lax",
         secure: bool = True,
-    ):
+    ) -> None:
         super().__init__(app)
+
         if not secret_key:
             raise ValueError("secret_key is required for session encryption")
+
         self.cookie_name = cookie_name
         self.max_age = max_age
         self.path = path
         self.same_site: SameSiteOptions = same_site
         self.secure = secure
         self.encryptor = SessionEncryptor(secret_key)
-    
-    async def dispatch(self, request: Request, call_next) -> Response:
+
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         session_manager = _SessionManager(
             encryptor=self.encryptor,
             cookie_name=self.cookie_name,
             max_age=self.max_age,
             path=self.path,
             same_site=self.same_site,
-            secure=self.secure
+            secure=self.secure,
         )
 
         try:
@@ -252,7 +265,7 @@ class EncryptedSessionMiddleware(BaseHTTPMiddleware):
             logger.error(f"Failed to decrypt session cookie: {str(e)}")
             session_manager.set_data(SessionData.empty())
 
-        request.state.session = cast(_SessionManager, session_manager)
+        request.state.session = session_manager
         response = await call_next(request)
         return response
 ```
@@ -349,13 +362,13 @@ async def callback(request: Request) -> Response:
     session_data: SessionData = SessionData(
         is_authenticated=True,
         access_token=callback_data.access_token,
-        # Convert the "expiresIn" seconds into milliseconds from the epoch.
-        expires_at=int((datetime.now() + timedelta(seconds=callback_data.expires_in)).timestamp() * 1000),
+        expires_at=callback_data.expires_at,
         refresh_token=callback_data.refresh_token or None,
         user_id=callback_data.user_info['sub'],
         tenant_id=callback_data.user_info['tnt_id'],
         idp_name=callback_data.user_info['idp_name'],
         tenant_domain_name=callback_data.tenant_domain_name,
+        tenant_custom_domain=callback_data.tenant_custom_domain or None,
     )
 
     # Create the callback response that sets the session cookie.
@@ -406,6 +419,7 @@ Create an auth middleware somewhere in your project to check that your session i
 
 ```python
 # src/middleware/auth_middleware.py
+from typing import Optional
 from datetime import datetime, timedelta
 from fastapi import Request, Response, status
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -432,7 +446,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         try:
             # Check if token is expired and refresh if necessary
-            new_token_data: TokenData | None = await wristband_auth.refresh_token_if_expired(
+            new_token_data: Optional[TokenData] = await wristband_auth.refresh_token_if_expired(
                 session_data.refresh_token,
                 session_data.expires_at
             )
@@ -440,15 +454,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # Update session with new token data
                 session_data.access_token = new_token_data.access_token
                 session_data.refresh_token = new_token_data.refresh_token
-                session_data.expires_at = int(
-                    (datetime.now() + timedelta(seconds=new_token_data.expires_in))
-                    .timestamp() * 1000
-                )
+                session_data.expires_at = new_token_data.expires_at
 
             # "Touch" the session cookie. Saves new token data if refresh occured.
             response: Response = await call_next(request)
             request.state.session.update(response, session_data)
             return response
+
         except Exception as e:
             logger.exception(f"Auth middleware error during token refresh: {str(e)}")
             return Response(status_code=status.HTTP_401_UNAUTHORIZED)
@@ -533,8 +545,9 @@ async def generate_new_nickname(request: Request) -> Response:
                 'nickname': 'Smooth Criminal'
             },
         )
-        
+
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     except Exception as e:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 ```
@@ -561,6 +574,7 @@ def __init__(self, auth_config: AuthConfig) -> None:
 | parse_tenant_from_root_domain | str | Only if using tenant subdomains in your application | The root domain for your application. This value only needs to be specified if you intend to use tenant subdomains in your Login and Callback Endpoint URLs.  The root domain should be set to the portion of the domain that comes after the tenant subdomain.  For example, if your application uses tenant subdomains such as `tenantA.yourapp.com` and `tenantB.yourapp.com`, then the root domain should be set to `yourapp.com`. This has no effect on any tenant custom domains passed to your Login Endpoint either via the `tenant_custom_domain` query parameter or via the `default_tenant_custom_domain` config. When this configuration is enabled, the SDK extracts the tenant subdomain from the host and uses it to construct the Wristband Authorize URL. |
 | redirect_uri | str | Yes | The URI that Wristband will redirect to after authenticating a user.  This should point to your application's callback endpoint. If you intend to use tenant subdomains in your Callback Endpoint URL, then this value must contain the `{tenant_domain}` token. For example: `https://{tenant_domain}.yourapp.com/auth/callback`. |
 | scopes | List[str] | No | The scopes required for authentication. Refer to the docs for [currently supported scopes](https://docs.wristband.dev/docs/oauth2-and-openid-connect-oidc#supported-openid-scopes). The default value is `["openid", "offline_access", "email"]`. |
+| token_expiration_buffer | int | No | Buffer time (in seconds) to subtract from the access token’s expiration time. This causes the token to be treated as expired before its actual expiration, helping to avoid token expiration during API calls. Defaults to 60 seconds. |
 | wristband_application_vanity_domain | str | Yes | The vanity domain of the Wristband application. |
 
 ## API
@@ -739,7 +753,8 @@ When the callback returns a `COMPLETED` result, all of the token and userinfo da
 | ------------------ | ---- | ----------- |
 | access_token | string | The access token that can be used for accessing Wristband APIs as well as protecting your application's backend APIs. |
 | custom_state | Optional[dict[str, Any]] | If you injected custom state into the Login State Cookie during the Login Endpoint for the current auth request, then that same custom state will be returned in this field. |
-| expires_in | int | The durtaion from the current time until the access token is expired (in seconds). |
+| expires_at | int | The absolute expiration time of the access token in milliseconds since the Unix epoch. The `token_expiration_buffer` SDK configuration is accounted for in this value. |
+| expires_in | int | The durtaion from the current time until the access token is expired (in seconds). The `token_expiration_buffer` SDK configuration is accounted for in this value. |
 | id_token | str | The ID token uniquely identifies the user that is authenticating and contains claim data about the user. |
 | refresh_token | Optional[str] | The refresh token that renews expired access tokens with Wristband, maintaining continuous access to services. |
 | return_url | Optional[str] | The URL to return to after authentication is completed. |
@@ -898,10 +913,10 @@ response: Response = await wristband_auth.logout(
 )
 ```
 
-### `async def refresh_token_if_expired(self, refresh_token: Optional[str], expires_at: Optional[int]) -> TokenData | None:`
+### `async def refresh_token_if_expired(self, refresh_token: Optional[str], expires_at: Optional[int]) -> Optional[TokenData]:`
 
 ```python
-token_data: TokenData | None = await wristband_auth.refresh_token_if_expired(
+token_data: Optional[TokenData] = await wristband_auth.refresh_token_if_expired(
     refresh_token="98yht308hf902hc90wh09",
     expires_at=1710707503788
 )
@@ -915,6 +930,16 @@ If your application is using access tokens generated by Wristband either to make
 | refresh_token | str | Yes | The refresh token used to send to Wristband when access tokens expire in order to receive new tokens. |
 
 If the `refresh_token_if_expired()` method finds that your token has not expired yet, it will return `null` as the value, which means your auth middleware can simply continue forward as usual.
+
+The `TokenData` is defined as follows:
+
+| TokenData Field | Type | Description |
+| --------------- | ---- | ----------- |
+| access_token | string | The access token that can be used for accessing Wristband APIs as well as protecting your application's backend APIs. |
+| expires_at | int | The absolute expiration time of the access token in milliseconds since the Unix epoch. The `token_expiration_buffer` SDK configuration is accounted for in this value. |
+| expires_in | int | The durtaion from the current time until the access token is expired (in seconds). The `token_expiration_buffer` SDK configuration is accounted for in this value. |
+| id_token | str | The ID token uniquely identifies the user that is authenticating and contains claim data about the user. |
+| refresh_token | Optional[str] | The refresh token that renews expired access tokens with Wristband, maintaining continuous access to services. |
 
 <br>
 
