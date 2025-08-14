@@ -36,9 +36,9 @@ jobs:
 
       - name: Lint with mypy and flake8
         run: |
-          mypy src
-          flake8 src tests
+          python -m mypy src
+          python -m flake8 src tests
 
       - name: Run tests with coverage
         run: |
-          pytest --cov=wristband --cov-report=term-missing
+          python -m pytest --cov=wristband --cov-report=term-missing
