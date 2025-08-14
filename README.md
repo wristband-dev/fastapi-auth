@@ -42,6 +42,7 @@ You can learn more about how authentication works in Wristband in our documentat
 
 ## Table of Contents
 
+- [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
   - [1) Initialize the SDK](#1-initialize-the-sdk)
@@ -55,6 +56,12 @@ You can learn more about how authentication works in Wristband in our documentat
 - [Wristband Auth Configuration Options](#wristband-auth-configuration-options)
 - [API](#api)
 - [Questions](#questions)
+
+<br/>
+
+## Requirements
+
+This SDK is designed to work for Python version 3.9+ and FastAPI version 0.100.0+.
 
 <br/>
 
