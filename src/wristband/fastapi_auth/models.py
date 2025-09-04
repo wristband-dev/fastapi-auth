@@ -22,8 +22,10 @@ class AuthConfig:
         login_state_secret: A secret (32 or more characters in length) used for encryption and decryption of login state
             cookies. If not provided, it will default to using the client secret. For enhanced security, it is
             recommended to provide a value that is unique from the client secret.
-        login_url: The URL for initiating the login request. This field is auto-configurable. Required when auto-configure is disabled.
-        redirect_uri: The redirect URI for callback after authentication. This field is auto-configurable. Required when auto-configure is disabled.
+        login_url: The URL for initiating the login request. This field is auto-configurable. Required when
+            auto-configure is disabled.
+        redirect_uri: The redirect URI for callback after authentication. This field is auto-configurable. Required
+            when auto-configure is disabled.
         wristband_application_vanity_domain: The vanity domain of the Wristband application.
         custom_application_login_page_url: Custom application login (tenant discovery) page URL if you are
             self-hosting the application login/tenant discovery UI. This field is auto-configurable.
