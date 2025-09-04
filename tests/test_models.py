@@ -9,6 +9,7 @@ from wristband.fastapi_auth.models import (
     LoginState,
     LogoutConfig,
     OAuthAuthorizeUrlConfig,
+    SdkConfiguration,
     TokenData,
     TokenResponse,
     UserInfo,
@@ -19,15 +20,28 @@ from wristband.fastapi_auth.models import (
 ########################################
 
 
-def test_auth_config_creation():
-    """Test basic AuthConfig creation with required fields."""
+def test_auth_config_creation_minimal():
+    """Test basic AuthConfig creation with only required fields."""
     config = AuthConfig(
         client_id="test_client_id",
         client_secret="test_client_secret",
+        wristband_application_vanity_domain="app.wristband.dev",
+    )
+
+    assert config.client_id == "test_client_id"
+    assert config.client_secret == "test_client_secret"
+    assert config.wristband_application_vanity_domain == "app.wristband.dev"
+
+
+def test_auth_config_creation_with_optionals():
+    """Test AuthConfig creation with optional fields."""
+    config = AuthConfig(
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        wristband_application_vanity_domain="app.wristband.dev",
         login_state_secret="a" * 32,
         login_url="https://example.com/login",
         redirect_uri="https://example.com/callback",
-        wristband_application_vanity_domain="app.wristband.dev",
     )
 
     assert config.client_id == "test_client_id"
@@ -43,18 +57,31 @@ def test_auth_config_defaults():
     config = AuthConfig(
         client_id="test_client_id",
         client_secret="test_client_secret",
-        login_state_secret="a" * 32,
-        login_url="https://example.com/login",
-        redirect_uri="https://example.com/callback",
         wristband_application_vanity_domain="app.wristband.dev",
     )
 
+    assert config.auto_configure_enabled is True
     assert config.custom_application_login_page_url is None
     assert config.dangerously_disable_secure_cookies is False
-    assert config.is_application_custom_domain_active is False
+    assert config.is_application_custom_domain_active is None
+    assert config.login_state_secret is None
+    assert config.login_url is None
     assert config.parse_tenant_from_root_domain is None
+    assert config.redirect_uri is None
     assert config.scopes == ["openid", "offline_access", "email"]
     assert config.token_expiration_buffer == 60
+
+
+def test_auth_config_auto_configure_disabled():
+    """Test AuthConfig with auto_configure_enabled set to False."""
+    config = AuthConfig(
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        wristband_application_vanity_domain="app.wristband.dev",
+        auto_configure_enabled=False,
+    )
+
+    assert config.auto_configure_enabled is False
 
 
 def test_auth_config_custom_values():
@@ -62,10 +89,11 @@ def test_auth_config_custom_values():
     config = AuthConfig(
         client_id="test_client_id",
         client_secret="test_client_secret",
+        wristband_application_vanity_domain="app.wristband.dev",
+        auto_configure_enabled=False,
         login_state_secret="b" * 32,
         login_url="https://example.com/login",
         redirect_uri="https://example.com/callback",
-        wristband_application_vanity_domain="app.wristband.dev",
         custom_application_login_page_url="https://custom.com/login",
         dangerously_disable_secure_cookies=True,
         is_application_custom_domain_active=True,
@@ -74,12 +102,144 @@ def test_auth_config_custom_values():
         token_expiration_buffer=120,
     )
 
+    assert config.auto_configure_enabled is False
     assert config.custom_application_login_page_url == "https://custom.com/login"
     assert config.dangerously_disable_secure_cookies is True
     assert config.is_application_custom_domain_active is True
     assert config.parse_tenant_from_root_domain == "example.com"
     assert config.scopes == ["openid", "profile"]
     assert config.token_expiration_buffer == 120
+
+
+def test_sdk_configuration_creation_minimal():
+    """Test SdkConfiguration creation with only required fields."""
+    config = SdkConfiguration(
+        login_url="https://auth.example.com/login",
+        redirect_uri="https://app.example.com/callback",
+        is_application_custom_domain_active=False,
+    )
+
+    assert config.login_url == "https://auth.example.com/login"
+    assert config.redirect_uri == "https://app.example.com/callback"
+    assert config.custom_application_login_page_url is None
+    assert config.is_application_custom_domain_active is False
+    assert config.login_url_tenant_domain_suffix is None
+
+
+def test_sdk_configuration_creation_with_all_fields():
+    """Test SdkConfiguration creation with all fields."""
+    config = SdkConfiguration(
+        login_url="https://auth.example.com/login",
+        redirect_uri="https://app.example.com/callback",
+        custom_application_login_page_url="https://custom.example.com/login",
+        is_application_custom_domain_active=True,
+        login_url_tenant_domain_suffix="example.com",
+    )
+
+    assert config.login_url == "https://auth.example.com/login"
+    assert config.redirect_uri == "https://app.example.com/callback"
+    assert config.custom_application_login_page_url == "https://custom.example.com/login"
+    assert config.is_application_custom_domain_active is True
+    assert config.login_url_tenant_domain_suffix == "example.com"
+
+
+def test_sdk_configuration_from_api_response():
+    """Test SdkConfiguration.from_api_response static method."""
+    api_response = {
+        "loginUrl": "https://auth.example.com/login",
+        "redirectUri": "https://app.example.com/callback",
+        "customApplicationLoginPageUrl": "https://custom.example.com/login",
+        "isApplicationCustomDomainActive": True,
+        "loginUrlTenantDomainSuffix": "example.com",
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    assert isinstance(config, SdkConfiguration)
+    assert config.login_url == "https://auth.example.com/login"
+    assert config.redirect_uri == "https://app.example.com/callback"
+    assert config.custom_application_login_page_url == "https://custom.example.com/login"
+    assert config.is_application_custom_domain_active is True
+    assert config.login_url_tenant_domain_suffix == "example.com"
+
+
+def test_sdk_configuration_from_api_response_minimal():
+    """Test SdkConfiguration.from_api_response with minimal API response."""
+    api_response = {
+        "loginUrl": "https://auth.example.com/login",
+        "redirectUri": "https://app.example.com/callback",
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    assert config.login_url == "https://auth.example.com/login"
+    assert config.redirect_uri == "https://app.example.com/callback"
+    assert config.custom_application_login_page_url is None
+    assert config.is_application_custom_domain_active is False
+    assert config.login_url_tenant_domain_suffix is None
+
+
+def test_sdk_configuration_from_api_response_with_null_values():
+    """Test SdkConfiguration.from_api_response with null values from API."""
+    api_response = {
+        "loginUrl": "https://auth.example.com/login",
+        "redirectUri": "https://app.example.com/callback",
+        "customApplicationLoginPageUrl": None,
+        "isApplicationCustomDomainActive": False,
+        "loginUrlTenantDomainSuffix": None,
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    assert config.login_url == "https://auth.example.com/login"
+    assert config.redirect_uri == "https://app.example.com/callback"
+    assert config.custom_application_login_page_url is None
+    assert config.is_application_custom_domain_active is False
+    assert config.login_url_tenant_domain_suffix is None
+
+
+def test_sdk_configuration_from_api_response_missing_optional_fields():
+    """Test SdkConfiguration.from_api_response when optional fields are missing from API response."""
+    api_response = {
+        "loginUrl": "https://auth.example.com/login",
+        "redirectUri": "https://app.example.com/callback",
+        # Optional fields missing entirely
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    assert config.login_url == "https://auth.example.com/login"
+    assert config.redirect_uri == "https://app.example.com/callback"
+    assert config.custom_application_login_page_url is None
+    assert config.is_application_custom_domain_active is False  # Gets default from .get()
+    assert config.login_url_tenant_domain_suffix is None
+
+
+def test_sdk_configuration_camelcase_to_snake_case_mapping():
+    """Test that from_api_response correctly maps camelCase to snake_case."""
+    api_response = {
+        "loginUrl": "https://test.com/login",
+        "redirectUri": "https://test.com/callback",
+        "customApplicationLoginPageUrl": "https://custom.test.com/login",
+        "isApplicationCustomDomainActive": True,
+        "loginUrlTenantDomainSuffix": "test.com",
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    # Verify all camelCase API keys are correctly mapped to snake_case Python attributes
+    assert hasattr(config, "login_url")
+    assert hasattr(config, "redirect_uri")
+    assert hasattr(config, "custom_application_login_page_url")
+    assert hasattr(config, "is_application_custom_domain_active")
+    assert hasattr(config, "login_url_tenant_domain_suffix")
+
+    # Verify values are correctly mapped
+    assert config.login_url == api_response["loginUrl"]
+    assert config.redirect_uri == api_response["redirectUri"]
+    assert config.custom_application_login_page_url == api_response["customApplicationLoginPageUrl"]
+    assert config.is_application_custom_domain_active == api_response["isApplicationCustomDomainActive"]
+    assert config.login_url_tenant_domain_suffix == api_response["loginUrlTenantDomainSuffix"]
 
 
 ########################################
@@ -211,18 +371,33 @@ def test_login_config_creation():
     """Test LoginConfig creation."""
     custom_state = {"theme": "dark"}
     config = LoginConfig(
-        custom_state=custom_state, default_tenant_custom_domain="default.com", default_tenant_domain="default"
+        custom_state=custom_state,
+        default_tenant_custom_domain="default.com",
+        default_tenant_domain="default",
+        return_url="https://example.com/return",
     )
 
     assert config.custom_state == custom_state
     assert config.default_tenant_custom_domain == "default.com"
     assert config.default_tenant_domain == "default"
+    assert config.return_url == "https://example.com/return"
 
 
 def test_login_config_defaults():
     """Test LoginConfig default values."""
     config = LoginConfig()
 
+    assert config.custom_state is None
+    assert config.default_tenant_custom_domain is None
+    assert config.default_tenant_domain is None
+    assert config.return_url is None
+
+
+def test_login_config_return_url():
+    """Test LoginConfig return_url field."""
+    config = LoginConfig(return_url="https://example.com/dashboard")
+
+    assert config.return_url == "https://example.com/dashboard"
     assert config.custom_state is None
     assert config.default_tenant_custom_domain is None
     assert config.default_tenant_domain is None
@@ -448,12 +623,14 @@ def test_logout_config_creation():
     config = LogoutConfig(
         redirect_url="https://example.com/goodbye",
         refresh_token="refresh_token_123",
+        state="logout_state_123",
         tenant_custom_domain="tenant.example.com",
         tenant_domain_name="my-tenant",
     )
 
     assert config.redirect_url == "https://example.com/goodbye"
     assert config.refresh_token == "refresh_token_123"
+    assert config.state == "logout_state_123"
     assert config.tenant_custom_domain == "tenant.example.com"
     assert config.tenant_domain_name == "my-tenant"
 
@@ -464,6 +641,7 @@ def test_logout_config_defaults():
 
     assert config.redirect_url is None
     assert config.refresh_token is None
+    assert config.state is None
     assert config.tenant_custom_domain is None
     assert config.tenant_domain_name is None
 
@@ -474,8 +652,20 @@ def test_logout_config_partial():
 
     assert config.redirect_url == "https://example.com/goodbye"
     assert config.refresh_token is None
+    assert config.state is None
     assert config.tenant_custom_domain is None
     assert config.tenant_domain_name == "my-tenant"
+
+
+def test_logout_config_state_field():
+    """Test LogoutConfig state field functionality."""
+    config = LogoutConfig(state="custom_logout_state", tenant_domain_name="my-tenant")
+
+    assert config.state == "custom_logout_state"
+    assert config.tenant_domain_name == "my-tenant"
+    assert config.redirect_url is None
+    assert config.refresh_token is None
+    assert config.tenant_custom_domain is None
 
 
 ########################################
@@ -485,13 +675,10 @@ def test_logout_config_partial():
 
 def test_dataclass_asdict_compatibility():
     """Test that all dataclasses work with asdict function."""
-    # Test AuthConfig
+    # Test AuthConfig with minimal required fields
     auth_config = AuthConfig(
         client_id="test",
         client_secret="secret",
-        login_state_secret="a" * 32,
-        login_url="https://example.com/login",
-        redirect_uri="https://example.com/callback",
         wristband_application_vanity_domain="app.wristband.dev",
     )
     auth_dict = asdict(auth_config)

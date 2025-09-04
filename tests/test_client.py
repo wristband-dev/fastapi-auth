@@ -6,7 +6,7 @@ import pytest
 
 from wristband.fastapi_auth.client import WristbandApiClient
 from wristband.fastapi_auth.exceptions import InvalidGrantError, WristbandError
-from wristband.fastapi_auth.models import TokenResponse
+from wristband.fastapi_auth.models import SdkConfiguration, TokenResponse
 
 ########################################
 # INITIALIZATION TESTS
@@ -18,21 +18,20 @@ def test_client_initialization_success():
     client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
 
     assert client._base_url == "https://app.wristband.dev/api/v1"
-    assert "Authorization" in client._headers
-    assert "Content-Type" in client._headers
-    assert client._headers["Content-Type"] == "application/x-www-form-urlencoded"
-    assert isinstance(client.client, httpx.AsyncClient)
-
-
-def test_client_initialization_with_auth_header():
-    """Test that authorization header is properly encoded."""
-    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+    assert client.client_id == "client123"
+    assert "Authorization" in client._basic_auth_headers
+    assert "Content-Type" in client._basic_auth_headers
+    assert client._basic_auth_headers["Content-Type"] == "application/x-www-form-urlencoded"
 
     # Verify the Authorization header is properly base64 encoded
     expected_credentials = base64.b64encode(b"client123:secret456").decode("utf-8")
     expected_auth = f"Basic {expected_credentials}"
+    assert client._basic_auth_headers["Authorization"] == expected_auth
 
-    assert client._headers["Authorization"] == expected_auth
+    assert "Content-Type" in client._json_headers
+    assert client._json_headers["Content-Type"] == "application/json"
+    assert client._json_headers["Accept"] == "application/json"
+    assert isinstance(client.client, httpx.AsyncClient)
 
 
 def test_client_initialization_empty_domain():
@@ -90,6 +89,66 @@ def test_client_initialization_none_client_secret():
 
 
 ########################################
+# GET_SDK_CONFIGURATION TESTS
+########################################
+
+
+@pytest.mark.asyncio
+async def test_get_sdk_configuration_success():
+    """Test successful SDK configuration retrieval."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    # Mock successful response
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "loginUrl": "https://auth.example.com/login",
+        "redirectUri": "https://app.example.com/callback",
+        "customApplicationLoginPageUrl": "https://custom.example.com/login",
+        "isApplicationCustomDomainActive": True,
+        "loginUrlTenantDomainSuffix": "example.com",
+    }
+
+    with patch.object(client.client, "get", return_value=mock_response) as mock_get:
+        # Mock raise_for_status to do nothing (success case)
+        mock_response.raise_for_status = Mock()
+
+        result = await client.get_sdk_configuration()
+
+        # Verify the request was made correctly
+        mock_get.assert_called_once_with(
+            "https://app.wristband.dev/api/v1/clients/client123/sdk-configuration",
+            headers=client._json_headers,
+        )
+
+        # Verify the result
+        assert isinstance(result, SdkConfiguration)
+        assert result.login_url == "https://auth.example.com/login"
+        assert result.redirect_uri == "https://app.example.com/callback"
+        assert result.custom_application_login_page_url == "https://custom.example.com/login"
+        assert result.is_application_custom_domain_active is True
+        assert result.login_url_tenant_domain_suffix == "example.com"
+
+
+@pytest.mark.asyncio
+async def test_get_sdk_configuration_error():
+    """Test SDK configuration retrieval with error."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    # Mock HTTP error
+    mock_response = Mock()
+    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "404 Not Found", request=Mock(), response=mock_response
+    )
+
+    with patch.object(client.client, "get", return_value=mock_response):
+        with pytest.raises(WristbandError) as exc_info:
+            await client.get_sdk_configuration()
+
+        assert exc_info.value.error == "unexpected_error"
+        assert "404 Not Found" in exc_info.value.error_description
+
+
+########################################
 # GET_TOKENS TESTS
 ########################################
 
@@ -117,7 +176,7 @@ async def test_get_tokens_success():
         # Verify the request was made correctly
         mock_post.assert_called_once_with(
             "https://app.wristband.dev/api/v1/oauth2/token",
-            headers=client._headers,
+            headers=client._basic_auth_headers,
             data={
                 "grant_type": "authorization_code",
                 "code": "code123",
@@ -256,14 +315,11 @@ async def test_get_userinfo_success():
     mock_response.json.return_value = {"sub": "user123", "email": "user@example.com", "name": "Test User"}
 
     with patch.object(client.client, "get", return_value=mock_response) as mock_get:
+        mock_response.raise_for_status = Mock()
         result = await client.get_userinfo("access_token_123")
-
-        # Verify the request was made correctly
         mock_get.assert_called_once_with(
             "https://app.wristband.dev/api/v1/oauth2/userinfo", headers={"Authorization": "Bearer access_token_123"}
         )
-
-        # Verify the result
         assert result == {"sub": "user123", "email": "user@example.com", "name": "Test User"}
 
 
@@ -277,9 +333,28 @@ async def test_get_userinfo_empty_response():
     mock_response.json.return_value = {}
 
     with patch.object(client.client, "get", return_value=mock_response):
+        mock_response.raise_for_status = Mock()
         result = await client.get_userinfo("access_token_123")
-
         assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_get_userinfo_error():
+    """Test get_userinfo with HTTP error."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    # Mock HTTP error
+    mock_response = Mock()
+    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "401 Unauthorized", request=Mock(), response=mock_response
+    )
+
+    with patch.object(client.client, "get", return_value=mock_response):
+        with pytest.raises(WristbandError) as exc_info:
+            await client.get_userinfo("invalid_token")
+
+        assert exc_info.value.error == "unexpected_error"
+        assert "401 Unauthorized" in exc_info.value.error_description
 
 
 ########################################
@@ -310,7 +385,7 @@ async def test_refresh_token_success():
         # Verify the request was made correctly
         mock_post.assert_called_once_with(
             "https://app.wristband.dev/api/v1/oauth2/token",
-            headers=client._headers,
+            headers=client._basic_auth_headers,
             data={"grant_type": "refresh_token", "refresh_token": "refresh123"},
         )
 
@@ -339,20 +414,20 @@ async def test_refresh_token_invalid_grant():
 
 @pytest.mark.asyncio
 async def test_refresh_token_other_error():
-    """Test refresh_token raises for other HTTP errors."""
+    """Test refresh_token raises WristbandError for other HTTP errors."""
     client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
 
     # Mock other error response
     mock_response = Mock()
     mock_response.status_code = 401
-    mock_response.json.return_value = {"error": "unauthorized"}
-    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "401 Unauthorized", request=Mock(), response=mock_response
-    )
+    mock_response.json.return_value = {"error": "unauthorized", "error_description": "Invalid client"}
 
     with patch.object(client.client, "post", return_value=mock_response):
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(WristbandError) as exc_info:
             await client.refresh_token("refresh123")
+
+        assert exc_info.value.error == "unauthorized"
+        assert exc_info.value.error_description == "Invalid client"
 
 
 ########################################
@@ -374,7 +449,9 @@ async def test_revoke_refresh_token_success():
 
         # Verify the request was made correctly
         mock_post.assert_called_once_with(
-            "https://app.wristband.dev/api/v1/oauth2/revoke", headers=client._headers, data={"token": "refresh123"}
+            "https://app.wristband.dev/api/v1/oauth2/revoke",
+            headers=client._basic_auth_headers,
+            data={"token": "refresh123"},
         )
 
         # Verify no return value
@@ -427,7 +504,7 @@ def test_authorization_header_encoding():
         client = WristbandApiClient("app.wristband.dev", client_id, client_secret)
 
         # Decode and verify the authorization header
-        auth_header = client._headers["Authorization"]
+        auth_header = client._basic_auth_headers["Authorization"]
         assert auth_header.startswith("Basic ")
 
         encoded_part = auth_header[6:]  # Remove "Basic "

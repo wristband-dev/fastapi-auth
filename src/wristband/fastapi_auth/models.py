@@ -13,45 +13,116 @@ class AuthConfig:
     Represents the configuration for Wristband authentication.
 
     Attributes:
+        auto_configure_enabled: Flag that tells the SDK to automatically set some of the SDK configuration values by
+            calling to Wristband's SDK Auto-Configuration Endpoint. Any manually provided configurations will take
+            precedence over the configs returned from the endpoint. Auto-configure is enabled by default. When disabled,
+            if manual configurations are not provided, then an error will be thrown.
         client_id: The client ID for the application.
         client_secret: The client secret for the application.
-        login_state_secret: A secret (32 or more characters in length) used for encryption
-            and decryption of login state cookies.
-        login_url: The URL for initiating the login request.
-        redirect_uri: The redirect URI for callback after authentication.
+        login_state_secret: A secret (32 or more characters in length) used for encryption and decryption of login state
+            cookies. If not provided, it will default to using the client secret. For enhanced security, it is
+            recommended to provide a value that is unique from the client secret.
+        login_url: The URL for initiating the login request. This field is auto-configurable. Required when auto-configure is disabled.
+        redirect_uri: The redirect URI for callback after authentication. This field is auto-configurable. Required when auto-configure is disabled.
         wristband_application_vanity_domain: The vanity domain of the Wristband application.
-        custom_application_login_page_url: Custom application login (tenant discovery) page URL
-            if you are self-hosting the application login/tenant discovery UI.
+        custom_application_login_page_url: Custom application login (tenant discovery) page URL if you are
+            self-hosting the application login/tenant discovery UI. This field is auto-configurable.
         dangerously_disable_secure_cookies: If set to True, the "Secure" attribute will not be
             included in any cookie settings. This should only be done when testing in local
             development (if necessary).
         is_application_custom_domain_active: Indicates whether an application-level custom domain
-            is active in your Wristband application.
+            is active in your Wristband application. This field is auto-configurable.
         parse_tenant_from_root_domain: The root domain for your application from which to parse
             out the tenant domain name. Indicates whether tenant subdomains are used for authentication.
+            This field is auto-configurable.
         scopes: The scopes required for authentication.
         token_expiration_buffer: Buffer time (in seconds) to subtract from the access token’s expiration time.
             This causes the token to be treated as expired before its actual expiration, helping to avoid token
-            expiration during API calls.
+            expiration during API calls. Defaults to 60 seconds.
     """
 
     client_id: str
     client_secret: str
-    login_state_secret: str
-    login_url: str
-    redirect_uri: str
     wristband_application_vanity_domain: str
+    auto_configure_enabled: bool = True
     custom_application_login_page_url: Optional[str] = None
     dangerously_disable_secure_cookies: bool = False
-    is_application_custom_domain_active: bool = False
+    is_application_custom_domain_active: Optional[bool] = None
+    login_state_secret: Optional[str] = None
+    login_url: Optional[str] = None
     parse_tenant_from_root_domain: Optional[str] = None
+    redirect_uri: Optional[str] = None
     scopes: List[str] = field(default_factory=lambda: ["openid", "offline_access", "email"])
-    token_expiration_buffer: Optional[int] = 60
+    token_expiration_buffer: int = 60
+
+
+@dataclass
+class SdkConfiguration:
+    """
+    Represents the SDK configuration returned from Wristband's SDK Auto-Configuration Endpoint.
+
+    Attributes:
+        custom_application_login_page_url: Custom application login (tenant discovery) page URL if you are
+            self-hosting the application login/tenant discovery UI.
+        is_application_custom_domain_active: Indicates whether an application-level custom domain
+            is active in your Wristband application.
+        login_url: The URL for initiating the login request.
+        login_url_tenant_domain_suffix: The tenant domain suffix for the login URL when using tenant subdomains.
+        redirect_uri: The redirect URI for callback after authentication.
+    """
+
+    login_url: str
+    redirect_uri: str
+    is_application_custom_domain_active: bool
+    custom_application_login_page_url: Optional[str] = None
+    login_url_tenant_domain_suffix: Optional[str] = None
+
+    @staticmethod
+    def from_api_response(response: dict[str, Any]) -> "SdkConfiguration":
+        """
+        Creates an SdkConfiguration instance from an API response dictionary.
+
+        Args:
+            response: The raw API response containing SDK configuration data.
+
+        Returns:
+            An SdkConfiguration instance with the parsed configuration data.
+        """
+        return SdkConfiguration(
+            login_url=response["loginUrl"],
+            redirect_uri=response["redirectUri"],
+            is_application_custom_domain_active=response.get("isApplicationCustomDomainActive", False),
+            custom_application_login_page_url=response.get("customApplicationLoginPageUrl"),
+            login_url_tenant_domain_suffix=response.get("loginUrlTenantDomainSuffix"),
+        )
 
 
 ########################################
 # LOGIN MODELS
 ########################################
+
+
+@dataclass
+class LoginConfig:
+    """
+    Represents the configuration for login.
+
+    Attributes:
+        custom_state: Custom state data for the login request.
+        default_tenant_custom_domain: An optional default tenant custom domain to use for the
+            login request in the event the tenant custom domain cannot be found in the
+            "tenant_custom_domain" request query parameter.
+        default_tenant_domain: An optional default tenant domain name to use for the login
+            request in the event the tenant domain cannot be found in either the subdomain or
+            the "tenant_domain" request query parameter (depending on your subdomain configuration).
+        return_url: The URL to return to after authentication is completed. If a value is provided,
+            then it takes precence over the `return_url` request query parameter.
+    """
+
+    custom_state: Optional[dict[str, Any]] = None
+    default_tenant_custom_domain: Optional[str] = None
+    default_tenant_domain: Optional[str] = None
+    return_url: Optional[str] = None
 
 
 @dataclass
@@ -118,26 +189,6 @@ class LoginState:
             A dictionary containing all the login state data.
         """
         return asdict(self)
-
-
-@dataclass
-class LoginConfig:
-    """
-    Represents the configuration for login.
-
-    Attributes:
-        custom_state: Custom state data for the login request.
-        default_tenant_custom_domain: An optional default tenant custom domain to use for the
-            login request in the event the tenant custom domain cannot be found in the
-            "tenant_custom_domain" request query parameter.
-        default_tenant_domain: An optional default tenant domain name to use for the login
-            request in the event the tenant domain cannot be found in either the subdomain or
-            the "tenant_domain" request query parameter (depending on your subdomain configuration).
-    """
-
-    custom_state: Optional[dict[str, Any]] = None
-    default_tenant_custom_domain: Optional[str] = None
-    default_tenant_domain: Optional[str] = None
 
 
 ########################################
@@ -300,6 +351,8 @@ class LogoutConfig:
         redirect_url: Optional URL that the logout endpoint will redirect to after completing
             the logout operation.
         refresh_token: The refresh token to revoke during logout.
+        state: Optional value that will be appended as a query parameter to the resolved logout URL, if provided.
+            This is used to preserve any desired state throughout the logout flow.
         tenant_custom_domain: The tenant custom domain for the tenant that the user belongs to
             (if applicable).
         tenant_domain_name: The domain name of the tenant the user belongs to.
@@ -307,5 +360,6 @@ class LogoutConfig:
 
     redirect_url: Optional[str] = None
     refresh_token: Optional[str] = None
+    state: Optional[str] = None
     tenant_custom_domain: Optional[str] = None
     tenant_domain_name: Optional[str] = None
