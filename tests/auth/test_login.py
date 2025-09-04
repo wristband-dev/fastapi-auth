@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -37,60 +37,105 @@ class TestWristbandAuthLogin:
         """Test login redirects to app-level login when no tenant info is available."""
         request = create_mock_request("/login")
 
-        response = await self.wristband_auth.login(request)
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
 
-        expected_url = (
-            f"https://{self.auth_config.wristband_application_vanity_domain}/login"
-            f"?client_id={self.auth_config.client_id}"
-        )
-        _, query_params = assert_redirect_no_cache(response, expected_url)
-        assert query_params["client_id"] == [self.auth_config.client_id]
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
 
-        # Ensure exactly 1 query parameter and no login cookies
-        assert len(query_params) == 1, f"Expected exactly 1 query parameter, found {len(query_params)}"
-        assert_no_login_cookies(response)
+            response = await self.wristband_auth.login(request)
+
+            expected_url = (
+                f"https://{self.auth_config.wristband_application_vanity_domain}/login"
+                f"?client_id={self.auth_config.client_id}"
+            )
+            _, query_params = assert_redirect_no_cache(response, expected_url)
+            assert query_params["client_id"] == [self.auth_config.client_id]
+
+            # Ensure exactly 1 query parameter and no login cookies
+            assert len(query_params) == 1, f"Expected exactly 1 query parameter, found {len(query_params)}"
+            assert_no_login_cookies(response)
 
     @pytest.mark.asyncio
     async def test_login_with_custom_application_login_page_url(self) -> None:
         """Test login uses custom application login page URL when configured and no tenant info available."""
         custom_url = "https://custom.example.com/login"
-        config_with_custom = AuthConfig(
-            client_id="test_client_id",
-            client_secret="test_client_secret",
-            login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://auth.example.com/login",
-            redirect_uri="https://app.example.com/callback",
-            wristband_application_vanity_domain="auth.example.com",
-            custom_application_login_page_url=custom_url,
-        )
-        wristband_auth = WristbandAuth(config_with_custom)
-
         request = create_mock_request("/login")
-        response = await wristband_auth.login(request)
 
-        expected_url = f"{custom_url}?client_id={config_with_custom.client_id}"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
-        assert query_params["client_id"] == [config_with_custom.client_id]
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
 
-        # Ensure exactly 1 query parameter and no login cookies
-        assert len(query_params) == 1, f"Expected exactly 1 query parameter, found {len(query_params)}"
-        assert_no_login_cookies(response)
+            mock_custom_url.return_value = custom_url
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+
+            response = await self.wristband_auth.login(request)
+
+            expected_url = f"{custom_url}?client_id={self.auth_config.client_id}"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
+            assert query_params["client_id"] == [self.auth_config.client_id]
+
+            # Ensure exactly 1 query parameter and no login cookies
+            assert len(query_params) == 1, f"Expected exactly 1 query parameter, found {len(query_params)}"
+            assert_no_login_cookies(response)
 
     @pytest.mark.asyncio
     async def test_login_with_tenant_domain_creates_oauth_url(self) -> None:
         """Test login creates full OAuth URL when tenant domain is available."""
         request = create_mock_request("/login", query_params={"tenant_domain": "test-tenant"})
 
-        with patch("time.time", return_value=1640995200):
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
             response = await self.wristband_auth.login(request)
 
-        expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
+            expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
 
-        assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
 
-        # Validate login state cookie is set properly
-        assert_single_login_cookie_valid(response)
+            # Validate login state cookie is set properly
+            assert_single_login_cookie_valid(response)
 
     @pytest.mark.asyncio
     async def test_login_with_login_config_custom_state(self) -> None:
@@ -99,20 +144,217 @@ class TestWristbandAuthLogin:
         custom_state = {"user_preference": "dark_mode"}
         login_config = LoginConfig(custom_state=custom_state)
 
-        with patch("time.time", return_value=1640995200):
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
             response = await self.wristband_auth.login(request, login_config)
 
-        expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
+            expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
 
-        assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
 
-        # Validate login state cookie is set and decrypt to check custom state
-        _, cookie_value = assert_single_login_cookie_valid(response)
+            # Validate login state cookie is set and decrypt to check custom state
+            _, cookie_value = assert_single_login_cookie_valid(response)
 
-        login_state = decrypt_login_state(cookie_value)
-        assert login_state.custom_state
-        assert login_state.custom_state["user_preference"] == "dark_mode"
+            login_state = decrypt_login_state(cookie_value)
+            assert login_state.custom_state
+            assert login_state.custom_state["user_preference"] == "dark_mode"
+
+    @pytest.mark.asyncio
+    async def test_login_with_login_config_return_url(self) -> None:
+        """Test login passes return_url from LoginConfig, taking precedence over query param."""
+        request = create_mock_request(
+            "/login", query_params={"tenant_domain": "test-tenant", "return_url": "https://app.example.com/from-query"}
+        )
+        config_return_url = "https://app.example.com/from-config"
+        login_config = LoginConfig(return_url=config_return_url)
+
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
+            response = await self.wristband_auth.login(request, login_config)
+
+            expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
+
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+
+            # Validate login state cookie is set and decrypt to check return_url
+            _, cookie_value = assert_single_login_cookie_valid(response)
+
+            login_state = decrypt_login_state(cookie_value)
+            # LoginConfig return_url should take precedence over query param
+            assert login_state.return_url == config_return_url
+
+    @pytest.mark.asyncio
+    async def test_login_return_url_query_param_fallback(self) -> None:
+        """Test login uses return_url from query param when LoginConfig doesn't specify one."""
+        query_return_url = "https://app.example.com/from-query"
+        request = create_mock_request(
+            "/login", query_params={"tenant_domain": "test-tenant", "return_url": query_return_url}
+        )
+        login_config = LoginConfig()  # No return_url specified
+
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
+            response = await self.wristband_auth.login(request, login_config)
+
+            expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
+
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+
+            # Validate login state cookie is set and decrypt to check return_url
+            _, cookie_value = assert_single_login_cookie_valid(response)
+
+            login_state = decrypt_login_state(cookie_value)
+            # Should fall back to query param value
+            assert login_state.return_url == query_return_url
+
+    @pytest.mark.asyncio
+    async def test_login_no_return_url_specified(self) -> None:
+        """Test login handles case where no return_url is specified anywhere."""
+        request = create_mock_request("/login", query_params={"tenant_domain": "test-tenant"})
+        login_config = LoginConfig()  # No return_url specified
+
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
+            response = await self.wristband_auth.login(request, login_config)
+
+            expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
+
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+
+            # Validate login state cookie is set and decrypt to check return_url
+            _, cookie_value = assert_single_login_cookie_valid(response)
+
+            login_state = decrypt_login_state(cookie_value)
+            # Should be None when not specified anywhere
+            assert login_state.return_url is None
+
+    @pytest.mark.asyncio
+    async def test_login_with_login_config_combined_options(self) -> None:
+        """Test login with both custom_state and return_url in LoginConfig."""
+        request = create_mock_request("/login", query_params={"tenant_domain": "test-tenant"})
+        custom_state = {"theme": "dark", "lang": "en"}
+        return_url = "https://app.example.com/dashboard"
+        login_config = LoginConfig(custom_state=custom_state, return_url=return_url)
+
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
+            response = await self.wristband_auth.login(request, login_config)
+
+            expected_url = "https://test-tenant-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
+
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+
+            # Validate login state cookie is set and decrypt to check both values
+            _, cookie_value = assert_single_login_cookie_valid(response)
+
+            login_state = decrypt_login_state(cookie_value)
+            assert login_state.custom_state == custom_state
+            assert login_state.return_url == return_url
 
     @pytest.mark.asyncio
     async def test_login_with_tenant_custom_domain_param(self) -> None:
@@ -125,16 +367,37 @@ class TestWristbandAuthLogin:
             default_tenant_custom_domain="default.custom.com",
         )
 
-        with patch("time.time", return_value=1640995200):
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
             response = await self.wristband_auth.login(request, login_config)
 
-        expected_url = "https://tenantA.custom.com/api/v1/oauth2/authorize"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
+            expected_url = "https://tenantA.custom.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
 
-        assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
 
-        # Validate login state cookie is set
-        assert_single_login_cookie_valid(response)
+            # Validate login state cookie is set
+            assert_single_login_cookie_valid(response)
 
     @pytest.mark.asyncio
     async def test_login_with_tenant_subdomain(self) -> None:
@@ -157,19 +420,40 @@ class TestWristbandAuthLogin:
             default_tenant_custom_domain="default.custom.com",
         )
 
-        with patch("time.time", return_value=1640995200):
+        # Mock all the config resolver methods for the temp auth instance
+        with (
+            patch.object(
+                temp_wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                temp_wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                temp_wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                temp_wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = "custom.com"
+            mock_redirect_uri.return_value = "https://{tenant_domain}.app.example.com/callback"
+
             response = await temp_wristband_auth.login(request, login_config)
 
-        expected_url = "https://sub-auth.example.com/api/v1/oauth2/authorize"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
+            expected_url = "https://sub-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
 
-        # Validate query params
-        assert_authorize_query_params(
-            query_params, "test_client_id", "https://{tenant_domain}.app.example.com/callback", "openid email"
-        )
+            # Validate query params
+            assert_authorize_query_params(
+                query_params, "test_client_id", "https://{tenant_domain}.app.example.com/callback", "openid email"
+            )
 
-        # Validate login state cookie is set
-        assert_single_login_cookie_valid(response)
+            # Validate login state cookie is set
+            assert_single_login_cookie_valid(response)
 
     @pytest.mark.asyncio
     async def test_login_with_tenant_domain_param(self) -> None:
@@ -180,16 +464,37 @@ class TestWristbandAuthLogin:
             default_tenant_custom_domain="default.custom.com",
         )
 
-        with patch("time.time", return_value=1640995200):
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
             response = await self.wristband_auth.login(request, login_config)
 
-        expected_url = "https://tenantA-auth.example.com/api/v1/oauth2/authorize"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
+            expected_url = "https://tenantA-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
 
-        assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
 
-        # Validate login state cookie is set
-        assert_single_login_cookie_valid(response)
+            # Validate login state cookie is set
+            assert_single_login_cookie_valid(response)
 
     @pytest.mark.asyncio
     async def test_login_with_default_tenant_custom_domain(self) -> None:
@@ -200,16 +505,37 @@ class TestWristbandAuthLogin:
             default_tenant_custom_domain="default.custom.com",
         )
 
-        with patch("time.time", return_value=1640995200):
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
             response = await self.wristband_auth.login(request, login_config)
 
-        expected_url = "https://default.custom.com/api/v1/oauth2/authorize"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
+            expected_url = "https://default.custom.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
 
-        assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
 
-        # Validate login state cookie is set
-        assert_single_login_cookie_valid(response)
+            # Validate login state cookie is set
+            assert_single_login_cookie_valid(response)
 
     @pytest.mark.asyncio
     async def test_login_with_default_tenant_domain_only(self) -> None:
@@ -217,16 +543,37 @@ class TestWristbandAuthLogin:
         request = create_mock_request("/login")
         login_config = LoginConfig(default_tenant_domain="default-tenant")
 
-        with patch("time.time", return_value=1640995200):
+        # Mock all the config resolver methods
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_custom_application_login_page_url", new_callable=AsyncMock
+            ) as mock_custom_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_is_application_custom_domain_active", new_callable=AsyncMock
+            ) as mock_custom_domain,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
+            ) as mock_redirect_uri,
+            patch("time.time", return_value=1640995200),
+        ):
+
+            mock_custom_url.return_value = None
+            mock_custom_domain.return_value = False
+            mock_parse_tenant.return_value = ""
+            mock_redirect_uri.return_value = "https://app.example.com/callback"
+
             response = await self.wristband_auth.login(request, login_config)
 
-        expected_url = "https://default-tenant-auth.example.com/api/v1/oauth2/authorize"
-        _, query_params = assert_redirect_no_cache(response, expected_url)
+            expected_url = "https://default-tenant-auth.example.com/api/v1/oauth2/authorize"
+            _, query_params = assert_redirect_no_cache(response, expected_url)
 
-        assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
+            assert_authorize_query_params(query_params, "test_client_id", "https://app.example.com/callback")
 
-        # Validate login state cookie is set
-        assert_single_login_cookie_valid(response)
+            # Validate login state cookie is set
+            assert_single_login_cookie_valid(response)
 
 
 class TestWristbandAuthCreateLoginState:
@@ -244,16 +591,47 @@ class TestWristbandAuthCreateLoginState:
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
-    def test_create_login_state_with_return_url(self) -> None:
-        """Test _create_login_state captures return_url from request."""
+    def test_create_login_state_with_return_url_from_query_param(self) -> None:
+        """Test _create_login_state captures return_url from request query param."""
         request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/dashboard"})
 
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri)
+        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "")
 
         assert result.return_url == "https://app.example.com/dashboard"
         assert result.redirect_uri == self.auth_config.redirect_uri
         assert result.state is not None
         assert result.code_verifier is not None
+
+    def test_create_login_state_return_url_param_takes_precedence(self) -> None:
+        """Test _create_login_state uses passed return_url parameter over query param."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+        config_return_url = "https://app.example.com/from-config"
+
+        result = self.wristband_auth._create_login_state(
+            request, self.auth_config.redirect_uri or "", return_url=config_return_url
+        )
+
+        # The passed parameter should take precedence
+        assert result.return_url == config_return_url
+        assert result.redirect_uri == self.auth_config.redirect_uri
+
+    def test_create_login_state_query_param_fallback(self) -> None:
+        """Test _create_login_state falls back to query param when no return_url parameter passed."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+
+        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "", return_url=None)
+
+        # Should fall back to query param
+        assert result.return_url == "https://app.example.com/from-query"
+
+    def test_create_login_state_empty_string_return_url_falls_back_to_query(self) -> None:
+        """Test _create_login_state treats empty string as falsy and falls back to query param."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+
+        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "", return_url="")
+
+        # Empty string should be falsy, so should fall back to query param
+        assert result.return_url == "https://app.example.com/from-query"
 
     def test_create_login_state_multiple_return_urls_raises_error(self) -> None:
         """Test _create_login_state raises error when multiple return_url params exist."""
@@ -262,13 +640,13 @@ class TestWristbandAuthCreateLoginState:
         mock_request.query_params.getlist = lambda key: ["url1", "url2"] if key == "return_url" else []
 
         with pytest.raises(TypeError, match="More than one \\[return_url\\] query parameter was encountered"):
-            self.wristband_auth._create_login_state(mock_request, self.auth_config.redirect_uri)
+            self.wristband_auth._create_login_state(mock_request, self.auth_config.redirect_uri or "")
 
-    def test_create_login_state_no_return_url(self) -> None:
-        """Test _create_login_state handles missing return_url."""
+    def test_create_login_state_no_return_url_anywhere(self) -> None:
+        """Test _create_login_state handles case where no return_url is specified anywhere."""
         request = create_mock_request("/login")
 
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri)
+        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "")
 
         assert result.return_url is None
         assert result.redirect_uri == self.auth_config.redirect_uri
@@ -278,9 +656,25 @@ class TestWristbandAuthCreateLoginState:
         request = create_mock_request("/login")
         custom_state = {"app": "test", "user": "123"}
 
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri, custom_state)
+        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "", custom_state)
 
         assert result.custom_state == custom_state
+
+    def test_create_login_state_with_all_parameters(self) -> None:
+        """Test _create_login_state with all parameters provided."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+        custom_state = {"theme": "dark"}
+        config_return_url = "https://app.example.com/from-config"
+
+        result = self.wristband_auth._create_login_state(
+            request, self.auth_config.redirect_uri or "", custom_state, config_return_url
+        )
+
+        assert result.custom_state == custom_state
+        assert result.return_url == config_return_url  # Config takes precedence
+        assert result.redirect_uri == self.auth_config.redirect_uri
+        assert result.state is not None
+        assert result.code_verifier is not None
 
 
 class TestWristbandAuthGenerateRandomString:
@@ -412,7 +806,7 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
         request = create_mock_request("/login")
         oauth_config = OAuthAuthorizeUrlConfig(
             client_id=self.auth_config.client_id,
-            redirect_uri=self.auth_config.redirect_uri,
+            redirect_uri=self.auth_config.redirect_uri or "",
             code_verifier="test_verifier",
             scopes=self.auth_config.scopes,
             state="test_state",
@@ -436,7 +830,7 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
         request = create_mock_request("/login")
         oauth_config = OAuthAuthorizeUrlConfig(
             client_id=self.auth_config.client_id,
-            redirect_uri=self.auth_config.redirect_uri,
+            redirect_uri=self.auth_config.redirect_uri or "",
             code_verifier="test_verifier",
             scopes=self.auth_config.scopes,
             state="test_state",
@@ -458,7 +852,7 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
         request = create_mock_request("/login", query_params={"login_hint": "user@example.com"})
         oauth_config = OAuthAuthorizeUrlConfig(
             client_id=self.auth_config.client_id,
-            redirect_uri=self.auth_config.redirect_uri,
+            redirect_uri=self.auth_config.redirect_uri or "",
             code_verifier="test_verifier",
             scopes=self.auth_config.scopes,
             state="test_state",
@@ -481,7 +875,7 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
 
         oauth_config = OAuthAuthorizeUrlConfig(
             client_id=self.auth_config.client_id,
-            redirect_uri=self.auth_config.redirect_uri,
+            redirect_uri=self.auth_config.redirect_uri or "",
             code_verifier="test_verifier",
             scopes=self.auth_config.scopes,
             state="test_state",

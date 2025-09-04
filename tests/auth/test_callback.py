@@ -1,11 +1,8 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tests.utilities import (
-    TEST_LOGIN_STATE_SECRET,
-    create_mock_request,
-)
+from tests.utilities import TEST_LOGIN_STATE_SECRET, create_mock_request
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.exceptions import InvalidGrantError, WristbandError
 from wristband.fastapi_auth.models import AuthConfig, CallbackResultType, LoginState, TokenResponse, UserInfo
@@ -32,10 +29,21 @@ class TestWristbandAuthCallback:
         """Test callback raises TypeError when state parameter is missing."""
         request = create_mock_request("/callback", query_params={"code": "auth_code", "tenant_domain": "tenant1"})
 
-        with pytest.raises(
-            TypeError, match="Invalid query parameter \\[state\\] passed from Wristband during callback"
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
         ):
-            await self.wristband_auth.callback(request)
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            with pytest.raises(
+                TypeError, match="Invalid query parameter \\[state\\] passed from Wristband during callback"
+            ):
+                await self.wristband_auth.callback(request)
 
     @pytest.mark.asyncio
     async def test_callback_empty_state_raises_error(self) -> None:
@@ -44,10 +52,21 @@ class TestWristbandAuthCallback:
             "/callback", query_params={"code": "auth_code", "state": "", "tenant_domain": "tenant1"}
         )
 
-        with pytest.raises(
-            TypeError, match="Invalid query parameter \\[state\\] passed from Wristband during callback"
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
         ):
-            await self.wristband_auth.callback(request)
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            with pytest.raises(
+                TypeError, match="Invalid query parameter \\[state\\] passed from Wristband during callback"
+            ):
+                await self.wristband_auth.callback(request)
 
     @pytest.mark.asyncio
     async def test_callback_missing_tenant_domain_with_subdomain_parsing_raises_error(self) -> None:
@@ -67,8 +86,18 @@ class TestWristbandAuthCallback:
             "/callback", query_params={"code": "auth_code", "state": "test_state"}, host="invalid.domain.com"
         )
 
-        with pytest.raises(WristbandError) as exc_info:
-            await wristband_auth.callback(request)
+        with (
+            patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
+            patch.object(
+                wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_parse_tenant.return_value = "auth.example.com"
+
+            with pytest.raises(WristbandError) as exc_info:
+                await wristband_auth.callback(request)
 
         # Check the error message contains expected content
         assert "missing_tenant_subdomain" in str(exc_info.value)
@@ -79,8 +108,20 @@ class TestWristbandAuthCallback:
         """Test callback raises WristbandError when tenant_domain param missing without subdomain parsing."""
         request = create_mock_request("/callback", query_params={"code": "auth_code", "state": "test_state"})
 
-        with pytest.raises(WristbandError) as exc_info:
-            await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            with pytest.raises(WristbandError) as exc_info:
+                await self.wristband_auth.callback(request)
 
         assert "missing_tenant_domain" in str(exc_info.value)
         assert "tenant_domain" in str(exc_info.value)
@@ -92,7 +133,19 @@ class TestWristbandAuthCallback:
             "/callback", query_params={"error": "login_required", "state": "test_state", "tenant_domain": "tenant1"}
         )
 
-        result = await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await self.wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
         assert result.callback_data is None
@@ -123,8 +176,20 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        with pytest.raises(WristbandError) as exc_info:
-            await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            with pytest.raises(WristbandError) as exc_info:
+                await self.wristband_auth.callback(request)
 
         # Check that the error contains the expected content
         assert "access_denied" in str(exc_info.value)
@@ -150,8 +215,20 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        with pytest.raises(WristbandError) as exc_info:
-            await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            with pytest.raises(WristbandError) as exc_info:
+                await self.wristband_auth.callback(request)
 
         # Check that the error contains the expected content
         assert "access_denied" in str(exc_info.value)
@@ -164,7 +241,19 @@ class TestWristbandAuthCallback:
         )
         # No cookies set on request
 
-        result = await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await self.wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
         assert result.callback_data is None
@@ -190,7 +279,19 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        result = await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await self.wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
         assert result.callback_data is None
@@ -213,10 +314,22 @@ class TestWristbandAuthCallback:
             "/callback", query_params={"state": "test_state", "tenant_domain": "tenant1"}, cookies=cookies
         )  # No code param
 
-        with pytest.raises(
-            ValueError, match="Invalid query parameter \\[code\\] passed from Wristband during callback"
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
         ):
-            await self.wristband_auth.callback(request)
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            with pytest.raises(
+                ValueError, match="Invalid query parameter \\[code\\] passed from Wristband during callback"
+            ):
+                await self.wristband_auth.callback(request)
 
     @pytest.mark.asyncio
     async def test_callback_successful_token_exchange_returns_completed(self) -> None:
@@ -250,10 +363,22 @@ class TestWristbandAuthCallback:
         # Mock user info
         mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
 
-        with patch.object(self.wristband_auth.wristband_api, "get_tokens", return_value=mock_token_response):
-            with patch.object(self.wristband_auth.wristband_api, "get_userinfo", return_value=mock_user_info):
-                with patch("time.time", return_value=1640995200.0):
-                    result = await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(self.wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
+            patch.object(self.wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
+            patch("time.time", return_value=1640995200.0),
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await self.wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.COMPLETED
         assert result.redirect_url is None
@@ -307,10 +432,22 @@ class TestWristbandAuthCallback:
 
         mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
 
-        with patch.object(self.wristband_auth.wristband_api, "get_tokens", return_value=mock_token_response):
-            with patch.object(self.wristband_auth.wristband_api, "get_userinfo", return_value=mock_user_info):
-                with patch("time.time", return_value=1640995200.0):
-                    result = await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(self.wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
+            patch.object(self.wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
+            patch("time.time", return_value=1640995200.0),
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await self.wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data is not None
@@ -326,7 +463,6 @@ class TestWristbandAuthCallback:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            token_expiration_buffer=None,
         )
         wristband_auth = WristbandAuth(config_no_buffer)
 
@@ -357,10 +493,20 @@ class TestWristbandAuthCallback:
 
         mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
 
-        with patch.object(wristband_auth.wristband_api, "get_tokens", return_value=mock_token_response):
-            with patch.object(wristband_auth.wristband_api, "get_userinfo", return_value=mock_user_info):
-                with patch("time.time", return_value=1640995200.0):
-                    result = await wristband_auth.callback(request)
+        with (
+            patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
+            patch.object(
+                wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
+            patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
+            patch("time.time", return_value=1640995200.0),
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await wristband_auth.callback(request)
 
         # Should use default buffer of 60 (from __init__)
         assert result.callback_data is not None
@@ -386,7 +532,18 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        with patch.object(self.wristband_auth.wristband_api, "get_tokens") as mock_get_tokens:
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(self.wristband_auth._wristband_api, "get_tokens") as mock_get_tokens,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
             mock_get_tokens.side_effect = InvalidGrantError("Invalid authorization code")
 
             result = await self.wristband_auth.callback(request)
@@ -414,7 +571,18 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        with patch.object(self.wristband_auth.wristband_api, "get_tokens") as mock_get_tokens:
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(self.wristband_auth._wristband_api, "get_tokens") as mock_get_tokens,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
             mock_get_tokens.side_effect = Exception("Network error")
 
             with pytest.raises(Exception, match="Network error"):
@@ -431,10 +599,21 @@ class TestWristbandAuthCallback:
             "tenant_domain": ["tenant1"],
         }.get(key, [])
 
-        with pytest.raises(
-            TypeError, match="Duplicate query parameter \\[code\\] passed from Wristband during callback"
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
         ):
-            await self.wristband_auth.callback(mock_request)
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            with pytest.raises(
+                TypeError, match="Duplicate query parameter \\[code\\] passed from Wristband during callback"
+            ):
+                await self.wristband_auth.callback(mock_request)
 
     @pytest.mark.asyncio
     async def test_callback_with_subdomain_parsing_extracts_tenant_correctly(self) -> None:
@@ -479,10 +658,20 @@ class TestWristbandAuthCallback:
 
         mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
 
-        with patch.object(wristband_auth.wristband_api, "get_tokens", return_value=mock_token_response):
-            with patch.object(wristband_auth.wristband_api, "get_userinfo", return_value=mock_user_info):
-                with patch("time.time", return_value=1640995200.0):
-                    result = await wristband_auth.callback(request)
+        with (
+            patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
+            patch.object(
+                wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
+            patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
+            patch("time.time", return_value=1640995200.0),
+        ):
+
+            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_parse_tenant.return_value = "auth.example.com"
+
+            result = await wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data is not None
@@ -501,7 +690,19 @@ class TestWristbandAuthCallback:
             },
         )
 
-        result = await self.wristband_auth.callback(request)
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await self.wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
         assert (
@@ -529,7 +730,17 @@ class TestWristbandAuthCallback:
             host="tenant1.auth.example.com",
         )
 
-        result = await wristband_auth.callback(request)
+        with (
+            patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
+            patch.object(
+                wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+
+            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_parse_tenant.return_value = "auth.example.com"
+
+            result = await wristband_auth.callback(request)
 
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
         assert result.redirect_url == "https://tenant1.auth.example.com/login"
@@ -575,10 +786,20 @@ class TestWristbandAuthCallback:
 
         mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
 
-        with patch.object(wristband_auth.wristband_api, "get_tokens", return_value=mock_token_response):
-            with patch.object(wristband_auth.wristband_api, "get_userinfo", return_value=mock_user_info):
-                with patch("time.time", return_value=1640995200.0):
-                    result = await wristband_auth.callback(request)
+        with (
+            patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
+            patch.object(
+                wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
+            patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
+            patch("time.time", return_value=1640995200.0),
+        ):
+
+            mock_login_url.return_value = "https://auth.example.com/login"
+            mock_parse_tenant.return_value = ""
+
+            result = await wristband_auth.callback(request)
 
         # Should not apply any buffer (3600 - 0 = 3600)
         assert result.callback_data is not None

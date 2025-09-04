@@ -3,7 +3,7 @@ import base64
 import httpx
 
 from .exceptions import InvalidGrantError, WristbandError
-from .models import TokenResponse, UserInfo
+from .models import SdkConfiguration, TokenResponse, UserInfo
 
 
 class WristbandApiClient:
@@ -18,13 +18,40 @@ class WristbandApiClient:
         credentials: str = f"{client_id}:{client_secret}"
         encoded_credentials: str = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
 
+        self.client_id = client_id
         self._base_url: str = f"https://{wristband_application_vanity_domain}/api/v1"
-        self._headers: dict[str, str] = {
+        self._basic_auth_headers: dict[str, str] = {
             "Authorization": f"Basic {encoded_credentials}",
             "Content-Type": "application/x-www-form-urlencoded",
         }
+        self._json_headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
 
         self.client = httpx.AsyncClient()
+
+    async def get_sdk_configuration(self) -> SdkConfiguration:
+        """
+        Retrieves the SDK configuration from Wristband's SDK Auto-Configuration Endpoint.
+
+        Returns:
+            SdkConfiguration: The SDK configuration containing auto-configurable values.
+
+        Raises:
+            WristbandError: If the request fails or returns an error response.
+        """
+        try:
+            response: httpx.Response = await self.client.get(
+                f"{self._base_url}/clients/{self.client_id}/sdk-configuration",
+                headers=self._json_headers,
+            )
+
+            response.raise_for_status()
+            return SdkConfiguration.from_api_response(response.json())
+
+        except Exception as e:
+            raise WristbandError("unexpected_error", str(e))
 
     async def get_tokens(self, code: str, redirect_uri: str, code_verifier: str) -> TokenResponse:
         if not code or not code.strip():
@@ -36,7 +63,7 @@ class WristbandApiClient:
 
         response: httpx.Response = await self.client.post(
             self._base_url + "/oauth2/token",
-            headers=self._headers,
+            headers=self._basic_auth_headers,
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -55,16 +82,20 @@ class WristbandApiClient:
         return TokenResponse.from_api_response(response.json())
 
     async def get_userinfo(self, access_token: str) -> UserInfo:
-        response: httpx.Response = await self.client.get(
-            self._base_url + "/oauth2/userinfo", headers={"Authorization": f"Bearer {access_token}"}
-        )
-        userinfo: UserInfo = response.json()
-        return userinfo
+        try:
+            response: httpx.Response = await self.client.get(
+                self._base_url + "/oauth2/userinfo", headers={"Authorization": f"Bearer {access_token}"}
+            )
+            response.raise_for_status()
+            userinfo: UserInfo = response.json()
+            return userinfo
+        except Exception as e:
+            raise WristbandError("unexpected_error", str(e))
 
     async def refresh_token(self, refresh_token: str) -> TokenResponse:
         response: httpx.Response = await self.client.post(
             self._base_url + "/oauth2/token",
-            headers=self._headers,
+            headers=self._basic_auth_headers,
             data={"grant_type": "refresh_token", "refresh_token": refresh_token},
         )
 
@@ -73,14 +104,13 @@ class WristbandApiClient:
             if data.get("error") == "invalid_grant":
                 raise InvalidGrantError(data.get("error_description", "Invalid grant"))
 
-            # Raises for 4xx or 5xx
-            response.raise_for_status()
+            raise WristbandError(data.get("error", "unknown_error"), data.get("error_description", "Unknown error"))
 
         return TokenResponse.from_api_response(response.json())
 
     async def revoke_refresh_token(self, refresh_token: str) -> None:
         await self.client.post(
             self._base_url + "/oauth2/revoke",
-            headers=self._headers,
+            headers=self._basic_auth_headers,
             data={"token": refresh_token},
         )

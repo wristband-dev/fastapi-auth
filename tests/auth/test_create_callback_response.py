@@ -1,10 +1,6 @@
 import pytest
 
-from tests.utilities import (
-    TEST_LOGIN_STATE_SECRET,
-    assert_redirect_no_cache,
-    create_mock_request,
-)
+from tests.utilities import TEST_LOGIN_STATE_SECRET, assert_redirect_no_cache, create_mock_request
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.models import AuthConfig
 
