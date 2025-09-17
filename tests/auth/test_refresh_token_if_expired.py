@@ -348,7 +348,7 @@ async def test_refresh_token_if_expired_timestamp_boundary(wristband_auth):
         mock_now = Mock()
         mock_now.timestamp.return_value = 1000000  # Fixed timestamp
         mock_datetime.now.return_value = mock_now
-        
+
         current_timestamp = int(1000000 * 1000)  # Same timestamp in milliseconds
         result = await wristband_auth.refresh_token_if_expired("refresh_token", current_timestamp)
 
