@@ -51,10 +51,15 @@ You can learn more about how authentication works in Wristband in our documentat
     - [Login Endpoint](#login-endpoint)
     - [Callback Endpoint](#callback-endpoint)
     - [Logout Endpoint](#logout-endpoint)
-  - [4) Guard Your Non-Auth APIs and Handle Token Refresh](#4-guard-your-non-auth-apis-and-handle-token-refresh)
+  - [4) Guard Your Protected APIs and Handle Token Refresh](#4-guard-your-protected-apis-and-handle-token-refresh)
   - [5) Pass Your Access Token to Downstream APIs](#5-pass-your-access-token-to-downstream-apis)
+  - [6) Implement CSRF Protection](#6-implement-csrf-protection)
 - [Wristband Auth Configuration Options](#wristband-auth-configuration-options)
 - [API](#api)
+  - [login()](#async-def-loginself-req-request-config-loginconfig--loginconfig---response)
+  - [callback()](#async-def-callbackself-req-request---callbackresult)
+  - [logout()](#async-def-logoutself-req-request-config-logoutconfig--logoutconfig---response)
+  - [refresh_token_if_expired()](#async-def-refresh_token_if_expiredself-refresh_token-optionalstr-expires_at-optionalint---optionaltokendata)
 - [Questions](#questions)
 
 <br/>
@@ -97,7 +102,7 @@ from wristband_fastapi_auth import WristbandAuth, AuthConfig
 auth_config = AuthConfig(
     client_id="<your_client_id>",
     client_secret="<your_client_secret>",
-    wristband_application_vanity_domain="auth.yourapp.io",
+    wristband_application_vanity_domain="<your_wristband_app_vanity_domain>",
 )
 
 # Initialize Wristband auth instance
@@ -117,32 +122,26 @@ You can borrow this example below to see how one might establish cookie-based se
 
 #### a) Create a class for your session data
 ```python
-# src/models/session_data.py
-from dataclasses import dataclass, asdict
-from typing import Any, Optional
+# src/models/schemas.py
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional
 
-@dataclass
-class SessionData:
-    is_authenticated: bool = False
-    access_token: str = ""
-    expires_at: int = 0
-    refresh_token: Optional[str] = None
-    user_id: str = ""
-    tenant_id: str = ""
-    idp_name: str = ""
-    tenant_domain_name: str = ""
-    tenant_custom_domain: Optional[str] = None
+class SessionData(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = asdict(self)
-        return data
+    is_authenticated: bool = Field(default=False, validation_alias="isAuthenticated", serialization_alias="isAuthenticated")
+    access_token: str = Field(default="", validation_alias="accessToken", serialization_alias="accessToken")
+    expires_at: int = Field(default=0, validation_alias="expiresAt", serialization_alias="expiresAt")
+    refresh_token: Optional[str] = Field(default=None, validation_alias="refreshToken", serialization_alias="refreshToken")
+    user_id: str = Field(default="", validation_alias="userId", serialization_alias="userId")
+    tenant_id: str = Field(default="", validation_alias="tenantId", serialization_alias="tenantId")
+    idp_name: str = Field(default="", validation_alias="idpName", serialization_alias="idpName")
+    tenant_domain_name: str = Field(default="", validation_alias="tenantDomainName", serialization_alias="tenantDomainName")
+    tenant_custom_domain: Optional[str] = Field(default=None, validation_alias="tenantCustomDomain", serialization_alias="tenantCustomDomain")
+    csrf_token: str = Field(default="", validation_alias="csrfToken", serialization_alias="csrfToken")
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> 'SessionData':
-        return SessionData(**data)
-    
-    @staticmethod
-    def empty() -> 'SessionData':
+    def empty() -> "SessionData":
         return SessionData()
 ```
 
@@ -154,7 +153,7 @@ from typing import Any, Awaitable, Callable, Literal
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from wristband.fastapi_auth import SessionEncryptor
-from models.session_data import SessionData
+from models.schemas import SessionData
 
 __all__ = ["EncryptedSessionMiddleware"]
 logger = logging.getLogger(__name__)
@@ -188,7 +187,7 @@ class _SessionManager:
 
     def update(self, response: Response, session_data: SessionData) -> None:
         self._session_data = session_data
-        encrypted_value = self.encryptor.encrypt(session_data.to_dict())
+        encrypted_value = self.encryptor.encrypt(session_data.model_dump())
         response.set_cookie(
             key=self.cookie_name,
             value=encrypted_value,
@@ -249,7 +248,7 @@ class EncryptedSessionMiddleware(BaseHTTPMiddleware):
             session_cookie = request.cookies.get(self.cookie_name)
             if session_cookie:
                 session_data_dict = self.encryptor.decrypt(session_cookie)
-                session_data = SessionData.from_dict(session_data_dict)
+                session_data = SessionData.model_validate(session_data_dict)
                 session_manager.set_data(session_data)
             else:
                 session_manager.set_data(SessionData.empty())
@@ -312,20 +311,17 @@ The goal of the Login Endpoint is to initiate an auth request by redirecting to 
 
 ```python
 # src/routes/routes.py
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Request
-from fastapi.responses import Response
-from wristband.fastapi_auth import CallbackResult, CallbackData, LogoutConfig, CallbackResultType
+from fastapi import APIRouter, Request, Response
+from wristband.fastapi_auth import CallbackResult, CallbackData, CallbackResultType, LogoutConfig
 from auth.wristband import wristband_auth
-from models.session_data import SessionData
+from models.schemas import SessionData
 
 router = APIRouter()
 
 # Login Endpoint - Route path can be whatever you prefer
 @router.get('/api/auth/login')
 async def login(request: Request) -> Response:
-    resp: Response = await wristband_auth.login(req=request)
-    return resp
+    return await wristband_auth.login(req=request)
 
 # ...
 ```
@@ -402,99 +398,139 @@ def logout(request: Request) -> Response:
 
 <br>
 
-### 4) Guard Your Non-Auth APIs and Handle Token Refresh
+### 4) Guard Your Protected APIs and Handle Token Refresh
 
 > [!NOTE]
 > There may be applications that do not want to utilize access tokens and/or refresh tokens. If that applies to your application, then you can ignore using the `refresh_token_if_expired()` functionality.
 
-Create an auth middleware somewhere in your project to check that your session is still valid. It must check if the access token is expired and perform a token refresh if necessary. The Wristband SDK will make 3 attempts to refresh the token and return the latest JWTs to your server.
+Instead of a middleware-based approach, FastAPI best practices favor the use of Dependencies for authenticated session validation and token refresh. This approach gives you more granular control over which endpoints require authentication and makes testing easier.
+
+<br>
+
+#### Creating FastAPI Dependencies for Authentication
+
+Create an auth Dependency somewhere in your project to check that your session is still valid. It should check if the access token is expired and perform a token refresh if necessary. The Wristband SDK will make 3 attempts to refresh the token and return the latest JWTs to your server.
+
+> [!IMPORTANT]
+> **Response Model Requirement**: When using the `require_session_auth` dependency, your endpoints must use response models (Pydantic schemas) or allow FastAPI to handle the response automatically. The dependency updates session cookies through the `Response` object, but if your endpoint returns a raw `Response` object, FastAPI won't apply the dependency's response modifications, and session updates (like token refresh) won't be saved.
+>
+> **✅ Correct - Uses response model:**
+> ```python
+> @router.get("/data", dependencies=[Depends(require_session_auth)], response_model=MyResponse)
+> async def get_data():
+>     return MyResponse(data="example")
+> ```
+>
+> **❌ Incorrect - Returns raw Response:**
+> ```python
+> @router.get("/data", dependencies=[Depends(require_session_auth)])
+> async def get_data():
+>     return Response(content="example", status_code=200)  # Session won't update!
+> ```
+>
+> **Workarounds for raw Response objects:**
+> - **Use auth middleware**: Implement a `BaseHTTPMiddleware` that handles authentication and token refresh at the request/response level, which works with any endpoint return type:
+>   ```python
+>   from starlette.middleware.base import BaseHTTPMiddleware
+>   class AuthMiddleware(BaseHTTPMiddleware):
+>       async def dispatch(self, request, call_next):
+>           # ...filter which requests need auth by path matching regex...
+>           response = await call_next(request)
+>           # ...validate session, refresh tokens, update session cookies on response...
+>           return response
+>   ```
+> - **Manual session handling**: Manually validate and update the session in your endpoint logic
 
 ```python
-# src/middleware/auth_middleware.py
-from typing import Optional
-from datetime import datetime, timedelta
-from fastapi import Request, Response, status
-from starlette.middleware.base import BaseHTTPMiddleware
+# src/auth/session_auth_dependencies.py
 import logging
+from typing import Optional
+from fastapi import HTTPException, Request, Response, status
 from wristband.fastapi_auth import TokenData
 from auth.wristband import wristband_auth
-from models.session_data import SessionData
+from models.schemas import SessionData
 
 logger = logging.getLogger(__name__)
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
-        path: str = request.url.path
+async def require_session_auth(request: Request, response: Response) -> None:
+    # Validate the user's authenticated session
+    session_data: SessionData = request.state.session.get()
+    if not session_data.is_authenticated:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-        # -> Skip authentication for any public routes <-
-        # You can add any other routes that makes sense for your app.
-        if path.startswith("/api/auth/"):
-            return await call_next(request)
+    try:
+        # Check if token is expired and refresh if necessary
+        new_token_data: Optional[TokenData] = await wristband_auth.refresh_token_if_expired(
+            session_data.refresh_token,
+            session_data.expires_at
+        )
+        if new_token_data:
+            # Update session with new token data
+            session_data.access_token = new_token_data.access_token
+            session_data.refresh_token = new_token_data.refresh_token
+            session_data.expires_at = new_token_data.expires_at
 
-        # Validate the user's authenticated session
-        session_data: SessionData = request.state.session.get()
-        if not session_data.is_authenticated:
-            return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+        # "Touch" the session cookie. Saves new token data if refresh occurred.
+        request.state.session.update(response, session_data)
 
-        try:
-            # Check if token is expired and refresh if necessary
-            new_token_data: Optional[TokenData] = await wristband_auth.refresh_token_if_expired(
-                session_data.refresh_token,
-                session_data.expires_at
-            )
-            if new_token_data:
-                # Update session with new token data
-                session_data.access_token = new_token_data.access_token
-                session_data.refresh_token = new_token_data.refresh_token
-                session_data.expires_at = new_token_data.expires_at
-
-            # "Touch" the session cookie. Saves new token data if refresh occured.
-            response: Response = await call_next(request)
-            request.state.session.update(response, session_data)
-            return response
-
-        except Exception as e:
-            logger.exception(f"Auth middleware error during token refresh: {str(e)}")
-            return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+    except Exception as e:
+        logger.exception(f"Session auth error during token refresh: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 ```
 
-Now add your auth middleware to your FastAPI application.
+<br>
+
+#### Using Authentication Dependencies
+
+You can apply authentication dependencies in two ways:
+
+- At the router level to protect all routes within a router
+- At the individual endpoint level for more granular control
+
+Both approaches offer different benefits depending on your application's needs.
+
+##### Router-Level Authentication
+
+You can apply validation to all routes within a router by adding the dependency at the router level:
 
 ```python
-# src/run.py
-from fastapi import FastAPI
-import logging
-import uvicorn
-from middleware.auth_middleware import AuthMiddleware
-from middleware.session_middleware import EncryptedSessionMiddleware
-from routes import router
+# src/routes/protected_routes.py
+from fastapi import APIRouter, Depends
+from auth.session_auth_dependencies import require_session_auth
 
-def create_app() -> FastAPI:
-    app = FastAPI()
+# All routes in this router will require authentication
+router = APIRouter(dependencies=[Depends(require_session_auth)])
 
-    # Add the auth middleware to the app.
-    # IMPORTANT: Middleware gets invoked in REVERSE order, so auth must come here
-    # before the session middleware, otherwise it won't have access to the session.
-    app.add_middleware(AuthMiddleware)
+@router.get("/protected-resource-01")
+async def get_protected_resource_01():
+    pass
 
-    # session middleware
-    app.add_middleware(
-        EncryptedSessionMiddleware,
-        cookie_name="session",
-        secret_key="<your-secret-key>",
-        max_age=1800,  # 30 minutes
-        path="/",
-        same_site="lax",
-        secure=True,  # Set to True in production
-    )
-    
-    # API routes
-    app.include_router(router)
-    return app
+@router.get("/protected-resource-02")
+async def get_protected_resource_02():
+    pass
+```
 
-app = create_app()
-if __name__ == '__main__':
-    uvicorn.run("run:app", host="localhost", port=6001, reload=True)
+##### Endpoint-Level Authentication
+
+You can apply authentication to specific endpoints when you want granular control:
+
+```python
+# src/routes/mixed_routes.py
+from fastapi import APIRouter, Depends
+from auth.session_auth_dependencies import require_session_auth
+from models.schemas import SessionData
+
+router = APIRouter()
+
+@router.get("/public-resource")
+async def get_public_resource():
+    # No authentication required
+    pass
+
+@router.get("/protected-resource", dependencies=[Depends(require_session_auth)])
+async def get_protected_resource():
+    # Authentication required
+    pass
 ```
 
 <br>
@@ -510,39 +546,166 @@ If you intend to utilize Wristband APIs within your application or secure any ba
 Authorization: Bearer <access_token_value>
 ```
 
-For example, if you were using Axios to make API calls to other services, you would pass the access token from your application session into the `Authorization` header as follows:
+For example, if you were making API calls to other services, you would pass the access token from your application session into the `Authorization` header as follows:
 
 ```python
-# src/routes/routes.py
+# src/routes/example_routes.py
 import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from auth.session_auth_dependencies import require_session_auth
+from models.schemas import SessionData
 
-# ...
-
+router = APIRouter()
 client = httpx.AsyncClient()
 
-@router.post('/api/nickname')
-async def generate_new_nickname(request: Request) -> Response:
+@router.post(
+    "/api/nickname",
+    dependencies=[Depends(require_session_auth)],
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def update_nickname(request: Request):
     try:
         session_data: SessionData = request.state.session.get()
         
-        # Update User API - https://docs.wristband.dev/reference/patchuserv1
+        # Update User API: https://docs.wristband.dev/reference/patchuserv1
         response: httpx.Response = await client.patch(
-            f'https://{'<your-wristband-app-vanity-domain>'}/api/v1/users/{session_data.user_id}',
+            f"https://<your-wristband-app-vanity-domain>/api/v1/users/{session_data.user_id}",
             headers={
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {session_data.access_token}'
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                # Add access token to Authorization header
+                "Authorization": f"Bearer {session_data.access_token}",
             },
-            json={
-                'nickname': 'Smooth Criminal'
-            },
+            json={"nickname": "Smooth Criminal"},
         )
 
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        response.raise_for_status()
 
     except Exception as e:
-        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 ```
+
+<br>
+
+### 6) Implement CSRF Protection
+
+Cross-Site Request Forgery (CSRF) is a security vulnerability where attackers trick authenticated users into unknowingly submitting malicious requests to your application. This implementation uses the Synchronizer Token Pattern to mitigate CSRF attacks by employing two mechanisms: a session cookie for user authentication and a CSRF token cookie containing a unique token. With each request to protected endpoints, the CSRF token must be included both in the cookie (set automatically) and in the request headers (set by your frontend), enabling server-side validation to prevent CSRF attacks.
+
+Refer to the [OWASP CSRF Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) for more comprehensive information about CSRF prevention techniques.
+
+<br>
+
+#### Create Basic CSRF Utilities
+
+First, create basic utility functions to manage CSRF tokens:
+
+```python
+# src/utils/csrf.py
+import secrets
+from fastapi.responses import Response
+
+def create_csrf_token() -> str:
+    """Generate a cryptographically secure CSRF token."""
+    return secrets.token_hex(32)
+
+def update_csrf_cookie(response: Response, csrf_token: str) -> None:
+    """Set the CSRF token cookie on the response."""
+    if not csrf_token:
+        raise ValueError("[csrf_token] cannot be None")
+
+    response.set_cookie(
+        key="CSRF-TOKEN",
+        value=csrf_token,
+        httponly=False,  # Must be False so frontend JavaScript can access the value
+        max_age=1800,  # 30 minutes in seconds
+        path="/",
+        samesite="lax",
+        secure=True,  # IMPORTANT: Set this to True in Production!!!
+    )
+
+def delete_csrf_cookie(response: Response) -> None:
+    """Delete the CSRF token cookie."""
+    response.set_cookie(
+        "CSRF-TOKEN",
+        value="",
+        max_age=0,
+        httponly=False,
+        samesite="lax",
+        secure=True,  # IMPORTANT: Set this to True in Production!!!
+    )
+```
+
+#### Add CSRF Token to Session Data
+
+Update your session data model to include the CSRF token:
+
+```python
+# src/models/schemas.py (addition to existing SessionData)
+class SessionData(BaseModel):
+    # ... existing fields ...
+    csrf_token: str = Field(default="", validation_alias="csrfToken", serialization_alias="csrfToken")
+```
+
+#### Integrate CSRF in Auth Endpoints
+
+Update your auth endpoints to create, update, and delete CSRF tokens:
+
+```python
+# src/routes/auth_routes.py (key additions)
+from utils.csrf import create_csrf_token, delete_csrf_cookie, update_csrf_cookie
+
+@router.get("/callback")
+async def callback(request: Request) -> Response:
+    # ... existing callback logic ...
+    
+    # Create session data including CSRF token
+    session_data: SessionData = SessionData(
+        # ... existing fields ...
+        csrf_token=create_csrf_token(),  # <-- ADD THIS
+    )
+
+    # Set both session and CSRF cookies
+    response: Response = await wristband_auth.create_callback_response(request, "http://localhost:6001/home")
+    request.state.session.update(response, session_data)
+    update_csrf_cookie(response, session_data.csrf_token)  # <-- ADD THIS
+    return response
+
+@router.get("/logout")
+async def logout(request: Request) -> Response:
+    # ... existing logout logic ...
+    
+    # Delete both session and CSRF cookies
+    request.state.session.delete(response)
+    delete_csrf_cookie(response)  # <-- ADD THIS
+    return response
+```
+
+#### Validate CSRF in Auth Dependency
+
+Update your authentication dependency to validate CSRF tokens:
+
+```python
+# src/auth/session_auth_dependencies.py (addition to existing function)
+from utils.csrf import create_csrf_token, delete_csrf_cookie, update_csrf_cookie
+
+async def require_session_auth(request: Request, response: Response) -> None:
+    # ... existing session validation ...
+
+    # ADD THIS: Validate CSRF token
+    header_csrf_token = request.headers.get("X-CSRF-TOKEN")
+    if not session_data.csrf_token or not header_csrf_token or session_data.csrf_token != header_csrf_token:
+        logger.warning(f"CSRF token validation failed for request to {request.url.path}")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    # ... rest of existing logic ...
+    
+    # Update both session and CSRF cookies
+    request.state.session.update(response, session_data)
+    update_csrf_cookie(response, session_data.csrf_token)  # <-- ADD THIS
+```
+
+> [!NOTE]
+> Your frontend application will need to read the CSRF token from the CSRF-TOKEN cookie and include it in the X-CSRF-TOKEN header for all requests to protected endpoints. Consult your frontend framework's documentation for cookie handling and HTTP header management.
 
 <br>
 
@@ -661,7 +824,7 @@ The `login()` method can also take optional configuration if your application ne
 | custom_state | Optional[dict[str, Any]] | No | Additional state to be saved in the Login State Cookie. Upon successful completion of an auth request/login attempt, your Callback Endpoint will return this custom state (unmodified) as part of the return type. |
 | default_tenant_domain_name | str | No | An optional default tenant domain name to use for the login request in the event the tenant domain cannot be found in either the subdomain or query parameters (depending on your subdomain configuration). |
 | default_tenant_custom_domain | str | No | An optional default tenant custom domain to use for the login request in the event the tenant custom domain cannot be found in the query parameters. |
-| returnUrl | string | No | The URL to return to after authentication is completed. If a value is provided, then it takes precedence over the `return_url` request query parameter. |
+| return_url | string | No | The URL to return to after authentication is completed. If a value is provided, then it takes precedence over the `return_url` request query parameter. |
 
 #### Which Domains Are Used in the Authorize URL?
 
@@ -796,6 +959,10 @@ GET https://customer01.yourapp.io/auth/login?return_url=https://customer01.youra
 ```
 
 The return URL is stored in the Login State Cookie, and it is available to you in your Callback Endpoint after the SDK's `callback()` method is done executing. You can choose to send users to that return URL (if necessary). The Login Config takes precedence over the query parameter in the event a value is provided for both.
+
+##### Return URL Preservation During Tenant Discovery
+
+When the `login()` method cannot resolve a tenant domain from the request (subdomain, query parameters, or defaults), the SDK redirects users to the Application-Level Login (Tenant Discovery) Page. To ensure a seamless user experience, any provided return URL values are automatically preserved by appending them to the `state` query parameter. This allows the return URL to be propagated back to the Login Endpoint once tenant discovery is complete, ensuring users land at their originally intended destination after authentication.
 
 <br>
 

@@ -5,7 +5,7 @@ import secrets
 import time
 from datetime import datetime
 from typing import Any, Literal, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import Request, Response
@@ -30,7 +30,6 @@ from .models import (
 from .utils import SessionEncryptor
 
 _logger: logging.Logger = logging.getLogger(__name__)
-_tenant_domain_token: str = "{tenant_domain}"
 
 
 class WristbandAuth:
@@ -46,6 +45,7 @@ class WristbandAuth:
 
     _cookie_prefix: str = "login#"
     _login_state_cookie_separator: str = "#"
+    _return_url_char_max_len = 450
     _token_refresh_retries = 2
     _token_refresh_retry_timeout = 0.1  # 100ms
 
@@ -57,6 +57,10 @@ class WristbandAuth:
             client_secret=self._config_resolver.get_client_secret(),
         )
         self._login_state_encryptor = SessionEncryptor(secret_key=self._config_resolver.get_login_state_secret())
+
+    #################################
+    #  DISCOVER
+    #################################
 
     async def discover(self) -> None:
         """
@@ -71,6 +75,10 @@ class WristbandAuth:
             )
 
         await self._config_resolver.preload_sdk_config()
+
+    #################################
+    #  LOGIN
+    #################################
 
     async def login(self, req: Request, config: LoginConfig = LoginConfig()) -> Response:
         """
@@ -112,6 +120,8 @@ class WristbandAuth:
         default_tenant_custom_domain: Optional[str] = config.default_tenant_custom_domain
         default_tenant_domain_name: Optional[str] = config.default_tenant_domain
 
+        resovled_return_url: Optional[str] = self._resolve_return_url(req, config.return_url)
+
         # In the event we cannot determine either a tenant custom domain or subdomain, send the user to app-level login.
         if not any(
             [
@@ -124,15 +134,16 @@ class WristbandAuth:
             app_login_url: str = (
                 custom_application_login_page_url or f"https://{wristband_application_vanity_domain}/login"
             )
+            state_param = f"&state={quote(resovled_return_url)}" if resovled_return_url else ""
             app_login_response: Response = RedirectResponse(
-                url=f"{app_login_url}?client_id={client_id}", status_code=302
+                url=f"{app_login_url}?client_id={client_id}{state_param}", status_code=302
             )
             app_login_response.headers["Cache-Control"] = "no-store"
             app_login_response.headers["Pragma"] = "no-cache"
             return app_login_response
 
         # Create the login state which will be cached in a cookie so that it can be accessed in the callback.
-        login_state: LoginState = self._create_login_state(req, redirect_uri, config.custom_state, config.return_url)
+        login_state: LoginState = self._create_login_state(redirect_uri, config.custom_state, resovled_return_url)
 
         # Create the Wristband Authorize Endpoint URL which the user will get redirectd to.
         authorize_url: str = self._get_oauth_authorize_url(
@@ -171,6 +182,10 @@ class WristbandAuth:
 
         # Perform the redirect to Wristband's Authorize Endpoint.
         return authorize_response
+
+    #################################
+    #  CALLBACK
+    #################################
 
     async def callback(self, req: Request) -> CallbackResult:
         """
@@ -305,6 +320,10 @@ class WristbandAuth:
         except Exception as ex:
             raise ex
 
+    #################################
+    #  CREATE CALLBACK RESPONSE
+    #################################
+
     async def create_callback_response(self, req: Request, redirect_url: str) -> Response:
         """
         Constructs the redirect response to your application and cleans up the login state.
@@ -336,6 +355,10 @@ class WristbandAuth:
             )
 
         return redirect_response
+
+    #################################
+    #  LOGOUT
+    #################################
 
     async def logout(self, req: Request, config: LogoutConfig = LogoutConfig()) -> Response:
         """
@@ -414,6 +437,10 @@ class WristbandAuth:
         res.headers["Location"] = config.redirect_url or f"{app_login_url}?client_id={client_id}"
         return res
 
+    #################################
+    #  REFRESH TOKEN IF EXPIRED
+    #################################
+
     async def refresh_token_if_expired(
         self, refresh_token: Optional[str], expires_at: Optional[int]
     ) -> Optional[TokenData]:
@@ -485,9 +512,9 @@ class WristbandAuth:
         # Safety check that should never happen
         raise WristbandError("unexpected_error", "Unexpected Error")
 
-    #####################################################
-    # --------------- Helper Functions ---------------- #
-    #####################################################
+    #################################
+    #  HELPER METHODS
+    #################################
 
     def _resolve_tenant_custom_domain_param(self, request: Request) -> str:
         tenant_custom_domain_param = request.query_params.getlist("tenant_custom_domain")
@@ -513,25 +540,32 @@ class WristbandAuth:
 
         return tenant_domain_param_list[0] if tenant_domain_param_list else ""
 
-    def _create_login_state(
-        self,
-        req: Request,
-        redirect_uri: str,
-        custom_state: Optional[dict[str, Any]] = None,
-        return_url: Optional[str] = None,
-    ) -> LoginState:
-        return_url_list = req.query_params.getlist("return_url")
+    def _resolve_return_url(self, request: Request, return_url: Optional[str] = None) -> Optional[str]:
+        """Resolve return URL source (if any) and validate length"""
+        return_url_list = request.query_params.getlist("return_url")
         if len(return_url_list) > 1:
             raise TypeError("More than one [return_url] query parameter was encountered")
 
         # LoginConfig takes precedence over the request query param for return URLs.
         resolved_return_url = return_url or (return_url_list[0] if return_url_list else None)
 
+        if resolved_return_url and len(resolved_return_url) > self._return_url_char_max_len:
+            _logger.debug(f"Return URL exceeds {self._return_url_char_max_len} characters: {resolved_return_url}")
+            return None
+
+        return resolved_return_url
+
+    def _create_login_state(
+        self,
+        redirect_uri: str,
+        custom_state: Optional[dict[str, Any]] = None,
+        return_url: Optional[str] = None,
+    ) -> LoginState:
         return LoginState(
             state=self._generate_random_string(),
             code_verifier=self._generate_random_string(64),
             redirect_uri=redirect_uri,
-            return_url=resolved_return_url,
+            return_url=return_url,
             custom_state=custom_state,
         )
 
@@ -576,7 +610,7 @@ class WristbandAuth:
                     )
 
     def _encrypt_login_state(self, login_state: LoginState) -> str:
-        encrypted_str = self._login_state_encryptor.encrypt(login_state.to_dict())
+        encrypted_str = self._login_state_encryptor.encrypt(login_state.model_dump())
 
         if len(encrypted_str.encode("utf-8")) > 4096:
             raise TypeError("Login state cookie exceeds 4kB in size.")

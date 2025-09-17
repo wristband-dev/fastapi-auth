@@ -593,9 +593,13 @@ class TestWristbandAuthCreateLoginState:
 
     def test_create_login_state_with_return_url_from_query_param(self) -> None:
         """Test _create_login_state captures return_url from request query param."""
-        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/dashboard"})
+        create_mock_request("/login", query_params={"return_url": "https://app.example.com/dashboard"})
 
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "")
+        # Updated method signature - no request parameter needed
+        result = self.wristband_auth._create_login_state(
+            redirect_uri=self.auth_config.redirect_uri or "",
+            return_url="https://app.example.com/dashboard",  # Pass resolved return_url directly
+        )
 
         assert result.return_url == "https://app.example.com/dashboard"
         assert result.redirect_uri == self.auth_config.redirect_uri
@@ -603,75 +607,58 @@ class TestWristbandAuthCreateLoginState:
         assert result.code_verifier is not None
 
     def test_create_login_state_return_url_param_takes_precedence(self) -> None:
-        """Test _create_login_state uses passed return_url parameter over query param."""
-        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+        """Test _create_login_state uses passed return_url parameter."""
         config_return_url = "https://app.example.com/from-config"
 
+        # Updated method signature
         result = self.wristband_auth._create_login_state(
-            request, self.auth_config.redirect_uri or "", return_url=config_return_url
+            redirect_uri=self.auth_config.redirect_uri or "", return_url=config_return_url
         )
 
-        # The passed parameter should take precedence
         assert result.return_url == config_return_url
         assert result.redirect_uri == self.auth_config.redirect_uri
 
     def test_create_login_state_query_param_fallback(self) -> None:
-        """Test _create_login_state falls back to query param when no return_url parameter passed."""
-        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+        """Test _create_login_state with None return_url parameter."""
+        # Updated method signature
+        result = self.wristband_auth._create_login_state(
+            redirect_uri=self.auth_config.redirect_uri or "", return_url=None
+        )
 
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "", return_url=None)
-
-        # Should fall back to query param
-        assert result.return_url == "https://app.example.com/from-query"
-
-    def test_create_login_state_empty_string_return_url_falls_back_to_query(self) -> None:
-        """Test _create_login_state treats empty string as falsy and falls back to query param."""
-        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
-
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "", return_url="")
-
-        # Empty string should be falsy, so should fall back to query param
-        assert result.return_url == "https://app.example.com/from-query"
-
-    def test_create_login_state_multiple_return_urls_raises_error(self) -> None:
-        """Test _create_login_state raises error when multiple return_url params exist."""
-        # Create mock with multiple return_url values
-        mock_request = create_mock_request("/login")
-        mock_request.query_params.getlist = lambda key: ["url1", "url2"] if key == "return_url" else []
-
-        with pytest.raises(TypeError, match="More than one \\[return_url\\] query parameter was encountered"):
-            self.wristband_auth._create_login_state(mock_request, self.auth_config.redirect_uri or "")
+        # Should be None when explicitly passed as None
+        assert result.return_url is None
 
     def test_create_login_state_no_return_url_anywhere(self) -> None:
-        """Test _create_login_state handles case where no return_url is specified anywhere."""
-        request = create_mock_request("/login")
-
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "")
+        """Test _create_login_state handles case where no return_url is specified."""
+        # Updated method signature
+        result = self.wristband_auth._create_login_state(redirect_uri=self.auth_config.redirect_uri or "")
 
         assert result.return_url is None
         assert result.redirect_uri == self.auth_config.redirect_uri
 
     def test_create_login_state_with_custom_state(self) -> None:
         """Test _create_login_state includes custom state."""
-        request = create_mock_request("/login")
         custom_state = {"app": "test", "user": "123"}
 
-        result = self.wristband_auth._create_login_state(request, self.auth_config.redirect_uri or "", custom_state)
+        # Updated method signature
+        result = self.wristband_auth._create_login_state(
+            redirect_uri=self.auth_config.redirect_uri or "", custom_state=custom_state
+        )
 
         assert result.custom_state == custom_state
 
     def test_create_login_state_with_all_parameters(self) -> None:
         """Test _create_login_state with all parameters provided."""
-        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
         custom_state = {"theme": "dark"}
         config_return_url = "https://app.example.com/from-config"
 
+        # Updated method signature
         result = self.wristband_auth._create_login_state(
-            request, self.auth_config.redirect_uri or "", custom_state, config_return_url
+            redirect_uri=self.auth_config.redirect_uri or "", custom_state=custom_state, return_url=config_return_url
         )
 
         assert result.custom_state == custom_state
-        assert result.return_url == config_return_url  # Config takes precedence
+        assert result.return_url == config_return_url
         assert result.redirect_uri == self.auth_config.redirect_uri
         assert result.state is not None
         assert result.code_verifier is not None
@@ -748,6 +735,21 @@ class TestWristbandAuthEncryptDecryptLoginState:
         assert decrypted.redirect_uri == login_state.redirect_uri
         assert decrypted.return_url == login_state.return_url
         assert decrypted.custom_state == login_state.custom_state
+
+    def test_encrypt_login_state_exceeds_size_limit_raises_error(self) -> None:
+        """Test _encrypt_login_state raises error when encrypted data exceeds 4kB."""
+        large_custom_state = {"large_data": "x" * 10000}  # 10KB of data
+
+        login_state = LoginState(
+            state="test_state",
+            code_verifier="test_verifier",
+            redirect_uri="https://app.example.com/callback",
+            return_url="https://app.example.com/dashboard",
+            custom_state=large_custom_state,
+        )
+
+        with pytest.raises(TypeError, match="Login state cookie exceeds 4kB in size."):
+            self.wristband_auth._encrypt_login_state(login_state)
 
 
 class TestWristbandAuthGenerateCodeChallenge:
@@ -944,6 +946,67 @@ class TestWristbandAuthCookieManagement:
         assert cookie_name is None
         assert cookie_value is None
 
+    def test_clear_oldest_login_state_cookie_no_cleanup_when_less_than_three(self) -> None:
+        """Test _clear_oldest_login_state_cookie does nothing when fewer than 3 cookies exist."""
+        from fastapi.responses import RedirectResponse
+
+        # Create a request with only 2 login cookies
+        request = create_mock_request(
+            "/login",
+            cookies={
+                "login#state1#1640995200000": "data1",
+                "login#state2#1640995300000": "data2",
+                "other_cookie": "unrelated",
+            },
+        )
+
+        response = RedirectResponse(url="https://example.com")
+
+        # Call the method
+        self.wristband_auth._clear_oldest_login_state_cookie(request, response, False)
+
+        # Check that no cookies were deleted
+        set_cookie_headers = [h for h in response.raw_headers if h[0] == b"set-cookie"]
+        assert len(set_cookie_headers) == 0
+
+    def test_clear_oldest_login_state_cookie_removes_oldest_when_three_or_more_exist(self) -> None:
+        """Test _clear_oldest_login_state_cookie removes oldest cookies when 3+ exist."""
+        from fastapi.responses import RedirectResponse
+
+        # Create a request with 4 login cookies (should trigger cleanup of 2 oldest)
+        request = create_mock_request(
+            "/login",
+            cookies={
+                "login#state1#1640995100000": "data1",  # oldest
+                "login#state2#1640995200000": "data2",  # second oldest
+                "login#state3#1640995300000": "data3",  # second newest
+                "login#state4#1640995400000": "data4",  # newest
+                "other_cookie": "unrelated",  # non-login cookie
+            },
+        )
+
+        response = RedirectResponse(url="https://example.com")
+
+        # Call the method
+        self.wristband_auth._clear_oldest_login_state_cookie(request, response, False)
+
+        # Check that delete_cookie was called for the 2 oldest cookies
+        # We need to inspect the response headers to see what cookies were deleted
+        set_cookie_headers = [h for h in response.raw_headers if h[0] == b"set-cookie"]
+
+        # Should have 2 delete cookie operations (for the 2 oldest)
+        assert len(set_cookie_headers) == 2
+
+        # Verify the oldest cookies are being deleted (Max-Age=0 indicates deletion)
+        cookie_headers_str = [header[1].decode() for header in set_cookie_headers]
+
+        # Both oldest cookies should be in the deletion headers
+        oldest_cookie_deleted = any("login#state1#1640995100000" in header for header in cookie_headers_str)
+        second_oldest_deleted = any("login#state2#1640995200000" in header for header in cookie_headers_str)
+
+        assert oldest_cookie_deleted
+        assert second_oldest_deleted
+
 
 class TestWristbandAuthBuildTenantLoginUrl:
     """Test cases for tenant login URL building functionality."""
@@ -1131,3 +1194,112 @@ class TestWristbandAuthAssertSingleParam:
         result = self.wristband_auth._assert_single_param(request, "param")
 
         assert result == ""
+
+
+class TestWristbandAuthResolveReturnUrl:
+    """Test cases for _resolve_return_url method."""
+
+    def setup_method(self) -> None:
+        """Set up test fixtures."""
+        self.auth_config = AuthConfig(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            login_state_secret=TEST_LOGIN_STATE_SECRET,
+            login_url="https://auth.example.com/login",
+            redirect_uri="https://app.example.com/callback",
+            wristband_application_vanity_domain="auth.example.com",
+        )
+        self.wristband_auth = WristbandAuth(self.auth_config)
+
+    def test_resolve_return_url_from_query_param(self) -> None:
+        """Test _resolve_return_url extracts return_url from request query param."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/dashboard"})
+
+        result = self.wristband_auth._resolve_return_url(request)
+
+        assert result == "https://app.example.com/dashboard"
+
+    def test_resolve_return_url_parameter_takes_precedence(self) -> None:
+        """Test _resolve_return_url uses passed return_url parameter over query param."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+        config_return_url = "https://app.example.com/from-config"
+
+        result = self.wristband_auth._resolve_return_url(request, config_return_url)
+
+        # The passed parameter should take precedence
+        assert result == config_return_url
+
+    def test_resolve_return_url_query_param_fallback(self) -> None:
+        """Test _resolve_return_url falls back to query param when no return_url parameter passed."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+
+        result = self.wristband_auth._resolve_return_url(request, None)
+
+        # Should fall back to query param
+        assert result == "https://app.example.com/from-query"
+
+    def test_resolve_return_url_empty_string_falls_back_to_query(self) -> None:
+        """Test _resolve_return_url treats empty string as falsy and falls back to query param."""
+        request = create_mock_request("/login", query_params={"return_url": "https://app.example.com/from-query"})
+
+        result = self.wristband_auth._resolve_return_url(request, "")
+
+        # Empty string should be falsy, so should fall back to query param
+        assert result == "https://app.example.com/from-query"
+
+    def test_resolve_return_url_multiple_return_urls_raises_error(self) -> None:
+        """Test _resolve_return_url raises error when multiple return_url params exist."""
+        # Create mock with multiple return_url values
+        mock_request = create_mock_request("/login")
+        mock_request.query_params.getlist = lambda key: ["url1", "url2"] if key == "return_url" else []
+
+        with pytest.raises(TypeError, match="More than one \\[return_url\\] query parameter was encountered"):
+            self.wristband_auth._resolve_return_url(mock_request)
+
+    def test_resolve_return_url_no_return_url_anywhere(self) -> None:
+        """Test _resolve_return_url handles case where no return_url is specified anywhere."""
+        request = create_mock_request("/login")
+
+        result = self.wristband_auth._resolve_return_url(request)
+
+        assert result is None
+
+    def test_resolve_return_url_too_long_returns_none(self) -> None:
+        """Test _resolve_return_url returns None when URL exceeds maximum length."""
+        # Create a URL longer than _return_url_char_max_len (450 characters)
+        long_url = "https://app.example.com/" + "x" * 500
+        request = create_mock_request("/login", query_params={"return_url": long_url})
+
+        with patch("logging.Logger.debug") as mock_debug:
+            result = self.wristband_auth._resolve_return_url(request)
+
+            assert result is None
+            # Verify that a debug log was made about the long URL
+            mock_debug.assert_called_once()
+            assert "Return URL exceeds 450 characters" in mock_debug.call_args[0][0]
+
+    def test_resolve_return_url_parameter_too_long_returns_none(self) -> None:
+        """Test _resolve_return_url returns None when parameter URL exceeds maximum length."""
+        long_url = "https://app.example.com/" + "x" * 500
+        request = create_mock_request("/login")
+
+        with patch("logging.Logger.debug") as mock_debug:
+            result = self.wristband_auth._resolve_return_url(request, long_url)
+
+            assert result is None
+            mock_debug.assert_called_once()
+            assert "Return URL exceeds 450 characters" in mock_debug.call_args[0][0]
+
+    def test_resolve_return_url_exactly_max_length_allowed(self) -> None:
+        """Test _resolve_return_url allows URL exactly at maximum length."""
+        # Create a URL exactly 450 characters long
+        base_url = "https://app.example.com/"
+        padding_needed = 450 - len(base_url)
+        exact_length_url = base_url + "x" * padding_needed
+
+        request = create_mock_request("/login", query_params={"return_url": exact_length_url})
+
+        result = self.wristband_auth._resolve_return_url(request) or ""
+
+        assert result == exact_length_url
+        assert len(result) == 450

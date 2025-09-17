@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wristband-fastapi-auth"
-version = "0.3.0"
+version = "0.4.0"
 description = "SDK for integrating your Python FastAPI application with Wristband. Handles user authentication and token management."
 readme = "README_PYPI.md"
 license = "MIT"
@@ -13,7 +13,7 @@ authors = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "cryptography>=44.0.3,<45.0.0",
+    "cryptography>=44.0.3",
     "fastapi>=0.100.0",
     "httpx>=0.24.0",
 ]
