@@ -1,14 +1,14 @@
-from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, Field
 
 ########################################
 # AUTH CONFIG MODELS
 ########################################
 
 
-@dataclass
-class AuthConfig:
+class AuthConfig(BaseModel):
     """
     Represents the configuration for Wristband authentication.
 
@@ -54,12 +54,11 @@ class AuthConfig:
     login_url: Optional[str] = None
     parse_tenant_from_root_domain: Optional[str] = None
     redirect_uri: Optional[str] = None
-    scopes: List[str] = field(default_factory=lambda: ["openid", "offline_access", "email"])
+    scopes: List[str] = Field(default=["openid", "offline_access", "email"])
     token_expiration_buffer: int = 60
 
 
-@dataclass
-class SdkConfiguration:
+class SdkConfiguration(BaseModel):
     """
     Represents the SDK configuration returned from Wristband's SDK Auto-Configuration Endpoint.
 
@@ -104,8 +103,7 @@ class SdkConfiguration:
 ########################################
 
 
-@dataclass
-class LoginConfig:
+class LoginConfig(BaseModel):
     """
     Represents the configuration for login.
 
@@ -127,8 +125,7 @@ class LoginConfig:
     return_url: Optional[str] = None
 
 
-@dataclass
-class OAuthAuthorizeUrlConfig:
+class OAuthAuthorizeUrlConfig(BaseModel):
     """
     Represents the configuration for building OAuth authorization URLs.
 
@@ -164,8 +161,7 @@ class OAuthAuthorizeUrlConfig:
     is_application_custom_domain_active: Optional[bool] = False
 
 
-@dataclass
-class LoginState:
+class LoginState(BaseModel):
     """
     Represents all possible state for the current login request, which is stored in the login state cookie.
 
@@ -182,15 +178,6 @@ class LoginState:
     redirect_uri: str
     return_url: Optional[str]
     custom_state: Optional[dict[str, Any]]
-
-    def to_dict(self) -> Dict[str, Union[str, Dict[str, str]]]:
-        """
-        Converts the LoginState instance to a dictionary representation.
-
-        Returns:
-            A dictionary containing all the login state data.
-        """
-        return asdict(self)
 
 
 ########################################
@@ -221,8 +208,7 @@ claims that can be returned, depending on your scopes.
 """
 
 
-@dataclass
-class CallbackData:
+class CallbackData(BaseModel):
     """
     Represents the callback data received after authentication.
 
@@ -250,18 +236,8 @@ class CallbackData:
     return_url: Optional[str]
     tenant_custom_domain: Optional[str]
 
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Converts the CallbackData instance to a dictionary representation.
 
-        Returns:
-            A dictionary containing all the callback data.
-        """
-        return asdict(self)
-
-
-@dataclass
-class TokenData:
+class TokenData(BaseModel):
     """
     Represents the token data received after authentication.
 
@@ -280,8 +256,7 @@ class TokenData:
     refresh_token: str
 
 
-@dataclass
-class CallbackResult:
+class CallbackResult(BaseModel):
     """
     Represents the result of the callback execution after authentication. It can include the set of
     callback data necessary for creating an authenticated session in the event a redirect is not required.
@@ -297,8 +272,7 @@ class CallbackResult:
     redirect_url: Optional[str]
 
 
-@dataclass
-class TokenResponse:
+class TokenResponse(BaseModel):
     """
     Represents the token response received from the Wristband token endpoint.
 
@@ -344,8 +318,7 @@ class TokenResponse:
 ########################################
 
 
-@dataclass
-class LogoutConfig:
+class LogoutConfig(BaseModel):
     """
     Represents the configuration for logout.
 

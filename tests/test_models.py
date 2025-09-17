@@ -1,5 +1,3 @@
-from dataclasses import asdict
-
 from wristband.fastapi_auth.models import (
     AuthConfig,
     CallbackData,
@@ -325,8 +323,8 @@ def test_login_state_creation():
     assert login_state.custom_state == custom_state
 
 
-def test_login_state_to_dict():
-    """Test LoginState to_dict method."""
+def test_login_state_model_dump():
+    """Test LoginState model_dump method."""
     custom_state = {"key": "value"}
     login_state = LoginState(
         state="test_state",
@@ -336,7 +334,7 @@ def test_login_state_to_dict():
         custom_state=custom_state,
     )
 
-    result = login_state.to_dict()
+    result = login_state.model_dump()
     expected = {
         "state": "test_state",
         "code_verifier": "test_verifier",
@@ -362,7 +360,7 @@ def test_login_state_with_none_values():
     assert login_state.return_url is None
     assert login_state.custom_state is None
 
-    result = login_state.to_dict()
+    result = login_state.model_dump()
     assert result["return_url"] is None
     assert result["custom_state"] is None
 
@@ -453,8 +451,8 @@ def test_callback_data_creation():
     assert callback_data.tenant_custom_domain == "tenant1.example.com"
 
 
-def test_callback_data_to_dict():
-    """Test CallbackData to_dict method."""
+def test_callback_data_model_dump():
+    """Test CallbackData model_dump method."""
     user_info = {"sub": "user123"}
     callback_data = CallbackData(
         access_token="access_token_123",
@@ -469,7 +467,7 @@ def test_callback_data_to_dict():
         tenant_custom_domain=None,
     )
 
-    result = callback_data.to_dict()
+    result = callback_data.model_dump()
 
     assert isinstance(result, dict)
     assert result["access_token"] == "access_token_123"
@@ -673,15 +671,15 @@ def test_logout_config_state_field():
 ########################################
 
 
-def test_dataclass_asdict_compatibility():
-    """Test that all dataclasses work with asdict function."""
+def test_pydantic_model_dump_compatibility():
+    """Test that all Pydantic models work with model_dump method."""
     # Test AuthConfig with minimal required fields
     auth_config = AuthConfig(
         client_id="test",
         client_secret="secret",
         wristband_application_vanity_domain="app.wristband.dev",
     )
-    auth_dict = asdict(auth_config)
+    auth_dict = auth_config.model_dump()
     assert isinstance(auth_dict, dict)
     assert auth_dict["client_id"] == "test"
 
@@ -693,7 +691,7 @@ def test_dataclass_asdict_compatibility():
         return_url=None,
         custom_state=None,
     )
-    login_dict = asdict(login_state)
+    login_dict = login_state.model_dump()
     assert isinstance(login_dict, dict)
     assert login_dict["state"] == "state"
 
@@ -710,7 +708,7 @@ def test_dataclass_asdict_compatibility():
         return_url=None,
         tenant_custom_domain=None,
     )
-    callback_dict = asdict(callback_data)
+    callback_dict = callback_data.model_dump()
     assert isinstance(callback_dict, dict)
     assert callback_dict["access_token"] == "token"
 
@@ -730,7 +728,7 @@ def test_nested_dict_handling():
         custom_state=complex_custom_state,
     )
 
-    result_dict = login_state.to_dict()
+    result_dict = login_state.model_dump()
     assert result_dict["custom_state"] == complex_custom_state
     assert result_dict["custom_state"]["user_preferences"]["theme"] == "dark"  # type: ignore
 

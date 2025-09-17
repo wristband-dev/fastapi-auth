@@ -14,15 +14,15 @@ from .utils import SessionEncryptor
 
 # Explicitly define what's available for import
 __all__ = [
-    "WristbandAuth",
     "AuthConfig",
     "CallbackData",
     "CallbackResult",
     "CallbackResultType",
     "LoginConfig",
     "LogoutConfig",
+    "SessionEncryptor",
     "TokenData",
     "UserInfo",
+    "WristbandAuth",
     "WristbandError",
-    "SessionEncryptor",
 ]

@@ -344,9 +344,13 @@ async def test_refresh_token_if_expired_other_exception_with_retries(wristband_a
 async def test_refresh_token_if_expired_timestamp_boundary(wristband_auth):
     """Test behavior at the exact expiration timestamp boundary."""
     # Set expires_at to exactly current time
-    current_timestamp = int(datetime.now().timestamp() * 1000)
+    with patch("wristband.fastapi_auth.auth.datetime") as mock_datetime:
+        mock_now = Mock()
+        mock_now.timestamp.return_value = 1000000  # Fixed timestamp
+        mock_datetime.now.return_value = mock_now
 
-    result = await wristband_auth.refresh_token_if_expired("refresh_token", current_timestamp)
+        current_timestamp = int(1000000 * 1000)  # Same timestamp in milliseconds
+        result = await wristband_auth.refresh_token_if_expired("refresh_token", current_timestamp)
 
     # Should return None since token is not yet expired (>= check)
     assert result is None
