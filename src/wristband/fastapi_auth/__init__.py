@@ -1,5 +1,6 @@
 from .auth import WristbandAuth
 from .exceptions import WristbandError
+from .middleware import SessionMiddleware
 from .models import (
     AuthConfig,
     CallbackData,
@@ -7,10 +8,12 @@ from .models import (
     CallbackResultType,
     LoginConfig,
     LogoutConfig,
+    SessionResponse,
     TokenData,
+    TokenResponse,
     UserInfo,
+    UserInfoRole,
 )
-from .utils import SessionEncryptor
 
 # Explicitly define what's available for import
 __all__ = [
@@ -20,9 +23,12 @@ __all__ = [
     "CallbackResultType",
     "LoginConfig",
     "LogoutConfig",
-    "SessionEncryptor",
+    "SessionMiddleware",
+    "SessionResponse",
     "TokenData",
+    "TokenResponse",
     "UserInfo",
+    "UserInfoRole",
     "WristbandAuth",
     "WristbandError",
 ]

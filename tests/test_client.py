@@ -6,7 +6,7 @@ import pytest
 
 from wristband.fastapi_auth.client import WristbandApiClient
 from wristband.fastapi_auth.exceptions import InvalidGrantError, WristbandError
-from wristband.fastapi_auth.models import SdkConfiguration, TokenResponse
+from wristband.fastapi_auth.models import SdkConfiguration, UserInfo, WristbandTokenResponse
 
 ########################################
 # INITIALIZATION TESTS
@@ -186,7 +186,7 @@ async def test_get_tokens_success():
         )
 
         # Verify the result
-        assert isinstance(result, TokenResponse)
+        assert isinstance(result, WristbandTokenResponse)
         assert result.access_token == "access123"
         assert result.token_type == "Bearer"
         assert result.expires_in == 3600
@@ -312,7 +312,15 @@ async def test_get_userinfo_success():
 
     # Mock successful response
     mock_response = Mock()
-    mock_response.json.return_value = {"sub": "user123", "email": "user@example.com", "name": "Test User"}
+    mock_json = {
+        "sub": "user123",
+        "tnt_id": "tenant123",
+        "app_id": "app123",
+        "idp_name": "Wristband",
+        "email": "user@example.com",
+        "name": "Test User",
+    }
+    mock_response.json.return_value = mock_json
 
     with patch.object(client.client, "get", return_value=mock_response) as mock_get:
         mock_response.raise_for_status = Mock()
@@ -320,7 +328,13 @@ async def test_get_userinfo_success():
         mock_get.assert_called_once_with(
             "https://app.wristband.dev/api/v1/oauth2/userinfo", headers={"Authorization": "Bearer access_token_123"}
         )
-        assert result == {"sub": "user123", "email": "user@example.com", "name": "Test User"}
+        assert isinstance(result, UserInfo)
+        assert result.user_id == "user123"
+        assert result.tenant_id == "tenant123"
+        assert result.application_id == "app123"
+        assert result.identity_provider_name == "Wristband"
+        assert result.email == "user@example.com"
+        assert result.full_name == "Test User"
 
 
 @pytest.mark.asyncio
@@ -334,8 +348,12 @@ async def test_get_userinfo_empty_response():
 
     with patch.object(client.client, "get", return_value=mock_response):
         mock_response.raise_for_status = Mock()
-        result = await client.get_userinfo("access_token_123")
-        assert result == {}
+
+        with pytest.raises(WristbandError) as exc_info:
+            await client.get_userinfo("access_token_123")
+
+        assert exc_info.value.error == "unexpected_error"
+        assert "Field required" in exc_info.value.error_description
 
 
 @pytest.mark.asyncio
@@ -390,7 +408,7 @@ async def test_refresh_token_success():
         )
 
         # Verify the result
-        assert isinstance(result, TokenResponse)
+        assert isinstance(result, WristbandTokenResponse)
         assert result.access_token == "new_access123"
 
 
@@ -530,7 +548,13 @@ async def test_concurrent_requests():
     }
 
     mock_userinfo_response = Mock()
-    mock_userinfo_response.json.return_value = {"sub": "user123", "email": "user@example.com"}
+    mock_userinfo_response.json.return_value = {
+        "sub": "user123",
+        "tnt_id": "tenant123",
+        "app_id": "app123",
+        "idp_name": "Wristband",
+        "email": "user@example.com",
+    }
 
     with (
         patch.object(client.client, "post", return_value=mock_token_response),
@@ -550,9 +574,9 @@ async def test_concurrent_requests():
 
         # Verify all requests completed
         assert len(results) == 3
-        assert isinstance(results[0], TokenResponse)  # get_tokens result
-        assert isinstance(results[1], dict)  # get_userinfo result
-        assert isinstance(results[2], TokenResponse)  # refresh_token result
+        assert isinstance(results[0], WristbandTokenResponse)  # get_tokens result
+        assert isinstance(results[1], UserInfo)  # get_userinfo result
+        assert isinstance(results[2], WristbandTokenResponse)  # refresh_token result
 
 
 @pytest.mark.asyncio

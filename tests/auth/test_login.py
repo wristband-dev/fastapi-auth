@@ -101,7 +101,7 @@ class TestWristbandAuthLogin:
             assert_no_login_cookies(response)
 
     @pytest.mark.asyncio
-    async def test_login_with_tenant_domain_creates_oauth_url(self) -> None:
+    async def test_login_with_tenant_domain_query_creates_oauth_url(self) -> None:
         """Test login creates full OAuth URL when tenant domain is available."""
         request = create_mock_request("/login", query_params={"tenant_domain": "test-tenant"})
 
@@ -363,7 +363,7 @@ class TestWristbandAuthLogin:
             "/login", query_params={"tenant_domain": "tenantA", "tenant_custom_domain": "tenantA.custom.com"}
         )
         login_config = LoginConfig(
-            default_tenant_domain="default-tenant",
+            default_tenant_name="default-tenant",
             default_tenant_custom_domain="default.custom.com",
         )
 
@@ -416,7 +416,7 @@ class TestWristbandAuthLogin:
 
         request = create_mock_request("/login", query_params={"tenant_domain": "tenantA"}, host="sub.custom.com")
         login_config = LoginConfig(
-            default_tenant_domain="default-tenant",
+            default_tenant_name="default-tenant",
             default_tenant_custom_domain="default.custom.com",
         )
 
@@ -460,7 +460,7 @@ class TestWristbandAuthLogin:
         """02b: Test login uses tenant domain param as next priority."""
         request = create_mock_request("/login", query_params={"tenant_domain": "tenantA"})
         login_config = LoginConfig(
-            default_tenant_domain="default-tenant",
+            default_tenant_name="default-tenant",
             default_tenant_custom_domain="default.custom.com",
         )
 
@@ -501,7 +501,7 @@ class TestWristbandAuthLogin:
         """03: Test login uses default tenant custom domain from LoginConfig."""
         request = create_mock_request("/login")
         login_config = LoginConfig(
-            default_tenant_domain="default-tenant",
+            default_tenant_name="default-tenant",
             default_tenant_custom_domain="default.custom.com",
         )
 
@@ -538,10 +538,10 @@ class TestWristbandAuthLogin:
             assert_single_login_cookie_valid(response)
 
     @pytest.mark.asyncio
-    async def test_login_with_default_tenant_domain_only(self) -> None:
+    async def test_login_with_default_tenant_name_only(self) -> None:
         """04: Test login uses default tenant domain from LoginConfig when no other tenant values found."""
         request = create_mock_request("/login")
-        login_config = LoginConfig(default_tenant_domain="default-tenant")
+        login_config = LoginConfig(default_tenant_name="default-tenant")
 
         # Mock all the config resolver methods
         with (
@@ -813,9 +813,9 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
             scopes=self.auth_config.scopes,
             state="test_state",
             tenant_custom_domain="custom.tenant.com",
-            tenant_domain_name="tenant1",
+            tenant_name="tenant1",
             default_tenant_custom_domain=None,
-            default_tenant_domain_name=None,
+            default_tenant_name=None,
             wristband_application_vanity_domain=self.auth_config.wristband_application_vanity_domain,
         )
 
@@ -826,7 +826,7 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
         assert "state=test_state" in result
         assert "scope=openid+email+profile" in result
 
-    def test_get_oauth_authorize_url_with_tenant_domain_name(self) -> None:
+    def test_get_oauth_authorize_url_with_tenant_name(self) -> None:
         """Test _get_oauth_authorize_url uses tenant domain name when custom domain not available."""
 
         request = create_mock_request("/login")
@@ -837,9 +837,9 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
             scopes=self.auth_config.scopes,
             state="test_state",
             tenant_custom_domain=None,
-            tenant_domain_name="tenant1",
+            tenant_name="tenant1",
             default_tenant_custom_domain=None,
-            default_tenant_domain_name=None,
+            default_tenant_name=None,
             wristband_application_vanity_domain=self.auth_config.wristband_application_vanity_domain,
         )
 
@@ -1044,15 +1044,15 @@ class TestWristbandAuthBuildTenantLoginUrl:
 
         # The tenant login URL building logic is embedded in callback method
         # We can test this indirectly by checking how tenant domain resolution works
-        tenant_domain = wristband_auth._resolve_tenant_domain_name(request, "auth.example.com")
-        assert tenant_domain == "tenant1"
+        tenant_name = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        assert tenant_name == "tenant1"
 
     def test_build_tenant_login_url_without_subdomain_parsing(self) -> None:
         """Test tenant login URL building without subdomain parsing."""
         request = create_mock_request("/callback", query_params={"state": "test_state", "tenant_domain": "tenant1"})
 
-        tenant_domain = self.wristband_auth._resolve_tenant_domain_name(request, None)
-        assert tenant_domain == "tenant1"
+        tenant_name = self.wristband_auth._resolve_tenant_name(request, None)
+        assert tenant_name == "tenant1"
 
     def test_build_tenant_login_url_with_tenant_custom_domain(self) -> None:
         """Test tenant login URL building with custom domain parameter."""
@@ -1084,8 +1084,8 @@ class TestWristbandAuthResolveTenantMethods:
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
-    def test_resolve_tenant_domain_name_from_subdomain(self) -> None:
-        """Test _resolve_tenant_domain_name extracts tenant from subdomain."""
+    def test_resolve_tenant_name_from_subdomain(self) -> None:
+        """Test _resolve_tenant_name extracts tenant from subdomain."""
         config_with_subdomain = AuthConfig(
             client_id="test_client_id",
             client_secret="test_client_secret",
@@ -1098,15 +1098,15 @@ class TestWristbandAuthResolveTenantMethods:
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="tenant1.auth.example.com")
-        result = wristband_auth._resolve_tenant_domain_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
 
         assert result == "tenant1"
 
-    def test_resolve_tenant_domain_name_from_query_param(self) -> None:
-        """Test _resolve_tenant_domain_name gets tenant from query parameter."""
+    def test_resolve_tenant_name_from_query_param(self) -> None:
+        """Test _resolve_tenant_name gets tenant from query parameter."""
         request = create_mock_request("/login", query_params={"tenant_domain": "tenant1"})
 
-        result = self.wristband_auth._resolve_tenant_domain_name(request, None)
+        result = self.wristband_auth._resolve_tenant_name(request, None)
 
         assert result == "tenant1"
 
@@ -1136,13 +1136,13 @@ class TestWristbandAuthResolveTenantMethods:
         with pytest.raises(TypeError, match="More than one \\[tenant_custom_domain\\] query parameter was encountered"):
             self.wristband_auth._resolve_tenant_custom_domain_param(mock_request)
 
-    def test_resolve_tenant_domain_name_multiple_values_raises_error(self) -> None:
-        """Test _resolve_tenant_domain_name raises error for multiple values."""
+    def test_resolve_tenant_name_multiple_values_raises_error(self) -> None:
+        """Test _resolve_tenant_name raises error for multiple values."""
         mock_request = create_mock_request("/login")
         mock_request.query_params.getlist = lambda key: ["tenant1", "tenant2"] if key == "tenant_domain" else []
 
         with pytest.raises(TypeError, match="More than one \\[tenant_domain\\] query parameter was encountered"):
-            self.wristband_auth._resolve_tenant_domain_name(mock_request, None)
+            self.wristband_auth._resolve_tenant_name(mock_request, None)
 
 
 class TestWristbandAuthAssertSingleParam:

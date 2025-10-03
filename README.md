@@ -46,20 +46,31 @@ You can learn more about how authentication works in Wristband in our documentat
 - [Installation](#installation)
 - [Usage](#usage)
   - [1) Initialize the SDK](#1-initialize-the-sdk)
-  - [2) Set Up Session Storage](#2-set-up-session-storage)
+  - [2) Set Up Session Middleware](#2-set-up-session-middleware)
   - [3) Add Auth Endpoints](#3-add-auth-endpoints)
     - [Login Endpoint](#login-endpoint)
     - [Callback Endpoint](#callback-endpoint)
     - [Logout Endpoint](#logout-endpoint)
+    - [Session Endpoint](#session-endpoint)
+    - [Token Endpoint (Optional)](#token-endpoint-optional)
   - [4) Guard Your Protected APIs and Handle Token Refresh](#4-guard-your-protected-apis-and-handle-token-refresh)
+    - [Using the Session Auth Dependency](#using-the-session-auth-dependency)
   - [5) Pass Your Access Token to Downstream APIs](#5-pass-your-access-token-to-downstream-apis)
-  - [6) Implement CSRF Protection](#6-implement-csrf-protection)
 - [Wristband Auth Configuration Options](#wristband-auth-configuration-options)
-- [API](#api)
-  - [login()](#async-def-loginself-req-request-config-loginconfig--loginconfig---response)
-  - [callback()](#async-def-callbackself-req-request---callbackresult)
-  - [logout()](#async-def-logoutself-req-request-config-logoutconfig--logoutconfig---response)
+  - [WristbandAuth()](#wristbandauth)
+  - [WristbandAuth.discover()](#wristbandauthdiscover)
+- [Auth API](#auth-api)
+  - [login()](#async-def-loginself-request-request-config-loginconfig--loginconfig---response)
+  - [callback()](#async-def-callbackself-request-request---callbackresult)
+  - [logout()](#async-def-logoutself-request-request-config-logoutconfig--logoutconfig---response)
   - [refresh_token_if_expired()](#async-def-refresh_token_if_expiredself-refresh_token-optionalstr-expires_at-optionalint---optionaltokendata)
+- [Session Management](#session-management)
+  - [Session Configuration](#session-configuration)
+  - [Accessing Sessions](#accessing-sessions)
+  - [Session API](#session-api)
+  - [CSRF Protection](#csrf-protection)
+- [JWT Token Validation](#jwt-token-validation)
+- [Demo Application](#wristband-multi-tenant-fastapi-demo-app)
 - [Questions](#questions)
 
 <br/>
@@ -92,10 +103,17 @@ pipenv install wristband-fastapi-auth
 ## Usage
 
 ### 1) Initialize the SDK
-First, create an instance of `WristbandAuth` in your FastAPI project structure in any location of your choice (i.e. `src/auth/wristband_auth.py`). Then, you can import this instance and use it across your project. When creating an instance, you provide all necessary configurations for your application to correlate with how you've set it up in Wristband.
+
+Create an instance of the SDK to use across your project. This centralizes all authentication configuration and provides the core SDK instance across your FastAPI application.
+
+<br>
+
+#### SDK Instance
+
+Create a `WristbandAuth` instance in a central location (e.g., `src/auth/wristband.py`):
 
 ```python
-# src/auth/wristband_auth.py
+# src/auth/wristband.py
 from wristband_fastapi_auth import WristbandAuth, AuthConfig
 
 # Configure Wristband authentication
@@ -111,164 +129,42 @@ wristband_auth = WristbandAuth(auth_config)
 
 <br>
 
-### 2) Set Up Session Storage
+#### Session Auth Dependency
 
-This Wristband authentication SDK is unopinionated about how you store and manage your application session data after the user has authenticated. We typically recommend cookie-based sessions due to it being lighter-weight and not requiring a backend session store like Redis or other technologies. We are big fans of encrypted cookie-based sessions for this reason.
+In the same file, you'll also create a reusable dependency for protecting authenticated routes in FastAPI.
+
+```python
+# src/auth/wristband.py (continued)
+
+# ...
+
+# Creates a dependency that validates sessions, handles CSRF protection,
+# and automatically refreshes expired tokens.
+require_session_auth = wristband_auth.create_session_auth_dependency()
+
+# Export for use across your application
+__all__ = ["wristband_auth", "require_session_auth"]
+```
+
+<br>
+
+### 2) Set Up Session Middleware
+
+This SDK is unopinionated about session management after authentication. For convenience, we provide encrypted cookie-based sessions: a lightweight approach that requires no backend infrastructure like Redis or databases.
 
 > [!NOTE]
-> <ins>You can use a 3rd party library such as [starsessions](https://github.com/alex-oleshkevich/starsessions)</ins> for FastAPI applications that need server-side sessions with Redis or other backend stores.
+> For applications requiring server-side session storage, consider [starsessions](https://github.com/alex-oleshkevich/starsessions), which supports Redis and other backends.
 
-You can borrow this example below to see how one might establish cookie-based session middleware to manage your application's session data using the SDK's `SessionEncryptor` utility:
+Add the SDK's `SessionMiddleware` to your FastAPI application:
 
-#### a) Create a class for your session data
 ```python
-# src/models/schemas.py
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
-
-class SessionData(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
-    is_authenticated: bool = Field(default=False, validation_alias="isAuthenticated", serialization_alias="isAuthenticated")
-    access_token: str = Field(default="", validation_alias="accessToken", serialization_alias="accessToken")
-    expires_at: int = Field(default=0, validation_alias="expiresAt", serialization_alias="expiresAt")
-    refresh_token: Optional[str] = Field(default=None, validation_alias="refreshToken", serialization_alias="refreshToken")
-    user_id: str = Field(default="", validation_alias="userId", serialization_alias="userId")
-    tenant_id: str = Field(default="", validation_alias="tenantId", serialization_alias="tenantId")
-    idp_name: str = Field(default="", validation_alias="idpName", serialization_alias="idpName")
-    tenant_domain_name: str = Field(default="", validation_alias="tenantDomainName", serialization_alias="tenantDomainName")
-    tenant_custom_domain: Optional[str] = Field(default=None, validation_alias="tenantCustomDomain", serialization_alias="tenantCustomDomain")
-    csrf_token: str = Field(default="", validation_alias="csrfToken", serialization_alias="csrfToken")
-
-    @staticmethod
-    def empty() -> "SessionData":
-        return SessionData()
-```
-
-#### b) Create an encrypted cookie session middleware
-```python
-# src/middleware/session_middleware.py
-import logging
-from typing import Any, Awaitable, Callable, Literal
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from wristband.fastapi_auth import SessionEncryptor
-from models.schemas import SessionData
-
-__all__ = ["EncryptedSessionMiddleware"]
-logger = logging.getLogger(__name__)
-SameSiteOptions = Literal["lax", "strict", "none"]
-
-
-class _SessionManager:
-    def __init__(
-        self,
-        encryptor: SessionEncryptor,
-        cookie_name: str,
-        max_age: int,
-        path: str,
-        same_site: SameSiteOptions,
-        secure: bool,
-    ) -> None:
-        self.encryptor = encryptor
-        self.cookie_name = cookie_name
-        self.max_age = max_age
-        self.path = path
-        self.same_site: SameSiteOptions = same_site
-        self.http_only = True
-        self.secure = secure
-        self._session_data: SessionData = SessionData.empty()
-
-    def get(self) -> SessionData:
-        return self._session_data
-
-    def set_data(self, session_data: SessionData) -> None:
-        self._session_data = session_data
-
-    def update(self, response: Response, session_data: SessionData) -> None:
-        self._session_data = session_data
-        encrypted_value = self.encryptor.encrypt(session_data.model_dump())
-        response.set_cookie(
-            key=self.cookie_name,
-            value=encrypted_value,
-            max_age=self.max_age,
-            path=self.path,
-            secure=self.secure,
-            httponly=self.http_only,
-            samesite=self.same_site,
-        )
-
-    def delete(self, response: Response) -> None:
-        self._session_data = SessionData.empty()
-        response.set_cookie(
-            key=self.cookie_name,
-            value="",
-            max_age=0,
-            path=self.path,
-            secure=self.secure,
-            httponly=self.http_only,
-            samesite=self.same_site,
-        )
-
-
-class EncryptedSessionMiddleware(BaseHTTPMiddleware):
-    def __init__(
-        self,
-        app: Any,
-        cookie_name: str = "session",
-        secret_key: str = "",
-        max_age: int = 1800,  # 30 minutes
-        path: str = "/",
-        same_site: Literal["lax", "strict", "none"] = "lax",
-        secure: bool = True,
-    ) -> None:
-        super().__init__(app)
-
-        if not secret_key:
-            raise ValueError("secret_key is required for session encryption")
-
-        self.cookie_name = cookie_name
-        self.max_age = max_age
-        self.path = path
-        self.same_site: SameSiteOptions = same_site
-        self.secure = secure
-        self.encryptor = SessionEncryptor(secret_key)
-
-    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-        session_manager = _SessionManager(
-            encryptor=self.encryptor,
-            cookie_name=self.cookie_name,
-            max_age=self.max_age,
-            path=self.path,
-            same_site=self.same_site,
-            secure=self.secure,
-        )
-
-        try:
-            session_cookie = request.cookies.get(self.cookie_name)
-            if session_cookie:
-                session_data_dict = self.encryptor.decrypt(session_cookie)
-                session_data = SessionData.model_validate(session_data_dict)
-                session_manager.set_data(session_data)
-            else:
-                session_manager.set_data(SessionData.empty())
-        except Exception as e:
-            logger.error(f"Failed to decrypt session cookie: {str(e)}")
-            session_manager.set_data(SessionData.empty())
-
-        request.state.session = session_manager
-        response = await call_next(request)
-        return response
-```
-
-#### c) Add the middleware your FastAPI app
-```python
-# src/run.py
-from fastapi import FastAPI
+# src/main.py
 import logging
 import uvicorn
-from middleware.session_middleware import EncryptedSessionMiddleware
+from fastapi import FastAPI
 from routes import router
+from wristband.fastapi_auth import SessionMiddleware
+
 
 def create_app() -> FastAPI:
     app = FastAPI()
@@ -277,17 +173,8 @@ def create_app() -> FastAPI:
 
     # Add session middleware.
     # You can generate a secret key by running:
-    #
     # > python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"
-    app.add_middleware(
-        EncryptedSessionMiddleware,
-        cookie_name="session",
-        secret_key="<your-secret-key>",
-        max_age=1800,  # 30 minutes
-        path="/",
-        same_site="lax",
-        secure=True,  # Set to True in production
-    )
+    app.add_middleware(SessionMiddleware, secret_key="<your-secret>")
     
     # API routes
     app.include_router(router)
@@ -298,6 +185,8 @@ app = create_app()
 if __name__ == '__main__':
     uvicorn.run("run:app", host="localhost", port=6001, reload=True)
 ```
+
+Once configured, the middleware automatically attaches a session object to every request at `request.state.session`. You can read and write session data using dictionary-style access (`request.state.session["key"]`), attribute access (`request.state.session.key`), or helper methods like `get()`, `save()`, and `clear()`. All session modifications are automatically encrypted and persisted to cookies after your route handler completes.
 
 <br>
 
@@ -310,18 +199,20 @@ There are <ins>three core API endpoints</ins> your FastAPI server should expose 
 The goal of the Login Endpoint is to initiate an auth request by redirecting to the [Wristband Authorization Endpoint](https://docs.wristband.dev/reference/authorizev1). It will store any state tied to the auth request in a Login State Cookie, which will later be used by the Callback Endpoint. The frontend of your application should redirect to this endpoint when users need to log in to your application.
 
 ```python
-# src/routes/routes.py
-from fastapi import APIRouter, Request, Response
-from wristband.fastapi_auth import CallbackResult, CallbackData, CallbackResultType, LogoutConfig
-from auth.wristband import wristband_auth
-from models.schemas import SessionData
+# src/routes/auth_routes.py
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from wristband.fastapi_auth import CallbackResult, CallbackResultType, LogoutConfig, SessionResponse
+from auth.wristband import require_session_auth, wristband_auth
+
 
 router = APIRouter()
 
 # Login Endpoint - Route path can be whatever you prefer
 @router.get('/api/auth/login')
 async def login(request: Request) -> Response:
-    return await wristband_auth.login(req=request)
+    # Construct the authorize request URL and redirect to the Wristband Authorize Endpoint
+    return await wristband_auth.login(request)
 
 # ...
 ```
@@ -333,35 +224,26 @@ async def login(request: Request) -> Response:
 The goal of the Callback Endpoint is to receive incoming calls from Wristband after the user has authenticated and ensure that the Login State cookie contains all auth request state in order to complete the Login Workflow. From there, it will call the [Wristband Token Endpoint](https://docs.wristband.dev/reference/tokenv1) to fetch necessary JWTs, call the [Wristband Userinfo Endpoint](https://docs.wristband.dev/reference/userinfov1) to get the user's data, and create a session for the application containing the JWTs and user data.
 
 ```python
-# src/routes/routes.py
+# src/routes/auth_routes.py (continued)
 
 # ...
 
+# Callback Endpoint - Route path can be whatever you prefer
 @router.get('/api/auth/callback')
 async def callback(request: Request) -> Response:
-    callback_result: CallbackResult = await wristband_auth.callback(req=request)
+    # Get the result of the callback
+    callback_result: CallbackResult = await wristband_auth.callback(request)
 
     # For certain edge cases, the SDK will require you to redirect back to login.
     if callback_result.type == CallbackResultType.REDIRECT_REQUIRED:
         return await wristband_auth.create_callback_response(request, callback_result.redirect_url)
-    
-    # Create session data for the authenticated user
-    callback_data: CallbackData = callback_result.callback_data
-    session_data: SessionData = SessionData(
-        is_authenticated=True,
-        access_token=callback_data.access_token,
-        expires_at=callback_data.expires_at,
-        refresh_token=callback_data.refresh_token or None,
-        user_id=callback_data.user_info['sub'],
-        tenant_id=callback_data.user_info['tnt_id'],
-        idp_name=callback_data.user_info['idp_name'],
-        tenant_domain_name=callback_data.tenant_domain_name,
-        tenant_custom_domain=callback_data.tenant_custom_domain or None,
-    )
 
-    # Create the callback response that sets the session cookie.
-    response: Response = await wristband_auth._create_callback_response(request, "http://yourapp.io/home")
-    request.state.session.update(response, session_data)
+    # Create the callback response.
+    response: Response = await wristband_auth.create_callback_response(request, "http://yourapp.io/home")
+
+    # Create a session for the authenticated user in FastAPI.
+    request.state.session.from_callback(callback_result.callback_data)
+
     return response
 
 # ...
@@ -373,24 +255,26 @@ The goal of the Logout Endpoint is to destroy the application's session that was
 
 
 ```python
-# src/routes/routes.py
+# src/routes/auth_routes.py (continued)
 
 # ...
 
+# Logout Endpoint - Route path can be whatever you prefer
 @router.get('/api/auth/logout')
 def logout(request: Request) -> Response:
-    session_data: SessionData = request.state.session.get()
-
-    # Delete the session cookie and redirect to the Wristband Logout Endpoint.
+    # Log out the user and redirect to the Wristband Logout Endpoint
     response: Response = await wristband_auth.logout(
-        req=request,
+        request=request,
         config=LogoutConfig(
-            refresh_token=session_data.refresh_token if session_data else None,
-            tenant_custom_domain=session_data.tenant_custom_domain if session_data else None,
-            tenant_domain_name=session_data.tenant_domain_name if session_data else None,
-        )
+            refresh_token=request.state.session.refresh_token,
+            tenant_custom_domain=request.state.session.tenant_custom_domain,
+            tenant_name=request.state.session.tenant_name,
+        ),
     )
-    request.state.session.delete(response)
+
+    # Clear the user's session in FastAPI.
+    request.state.session.clear()
+
     return response
 
 # ...
@@ -398,89 +282,117 @@ def logout(request: Request) -> Response:
 
 <br>
 
-### 4) Guard Your Protected APIs and Handle Token Refresh
+#### Session Endpoint
 
 > [!NOTE]
-> There may be applications that do not want to utilize access tokens and/or refresh tokens. If that applies to your application, then you can ignore using the `refresh_token_if_expired()` functionality.
+> This endpoint is required for Wristband frontend SDKs to function. For more details, see the [Wristband Session Management documentation](https://docs.wristband.dev/docs/session-management-backend-server).
 
-Instead of a middleware-based approach, FastAPI best practices favor the use of Dependencies for authenticated session validation and token refresh. This approach gives you more granular control over which endpoints require authentication and makes testing easier.
+Wristband frontend SDKs require a Session Endpoint in your backend to verify authentication status and retrieve session metadata. Create a protected session endpoint that uses `get_session_response()` to return the session response format expected by Wristband's frontend SDKs. The response model will always have a `user_id` and a `tenant_id` in it. You can include any additional data for your frontend by customizing the `metadata` parameter (optional), which requires JSON-serializable values.
 
-<br>
-
-#### Creating FastAPI Dependencies for Authentication
-
-Create an auth Dependency somewhere in your project to check that your session is still valid. It should check if the access token is expired and perform a token refresh if necessary. The Wristband SDK will make 3 attempts to refresh the token and return the latest JWTs to your server.
-
-> [!IMPORTANT]
-> **Response Model Requirement**: When using the `require_session_auth` dependency, your endpoints must use response models (Pydantic schemas) or allow FastAPI to handle the response automatically. The dependency updates session cookies through the `Response` object, but if your endpoint returns a raw `Response` object, FastAPI won't apply the dependency's response modifications, and session updates (like token refresh) won't be saved.
->
-> **✅ Correct - Uses response model:**
-> ```python
-> @router.get("/data", dependencies=[Depends(require_session_auth)], response_model=MyResponse)
-> async def get_data():
->     return MyResponse(data="example")
-> ```
->
-> **❌ Incorrect - Returns raw Response:**
-> ```python
-> @router.get("/data", dependencies=[Depends(require_session_auth)])
-> async def get_data():
->     return Response(content="example", status_code=200)  # Session won't update!
-> ```
->
-> **Workarounds for raw Response objects:**
-> - **Use auth middleware**: Implement a `BaseHTTPMiddleware` that handles authentication and token refresh at the request/response level, which works with any endpoint return type:
->   ```python
->   from starlette.middleware.base import BaseHTTPMiddleware
->   class AuthMiddleware(BaseHTTPMiddleware):
->       async def dispatch(self, request, call_next):
->           # ...filter which requests need auth by path matching regex...
->           response = await call_next(request)
->           # ...validate session, refresh tokens, update session cookies on response...
->           return response
->   ```
-> - **Manual session handling**: Manually validate and update the session in your endpoint logic
+**Make sure to protect this endpoint using the `require_session_auth` dependency you created!**
 
 ```python
-# src/auth/session_auth_dependencies.py
-import logging
-from typing import Optional
-from fastapi import HTTPException, Request, Response, status
-from wristband.fastapi_auth import TokenData
-from auth.wristband import wristband_auth
-from models.schemas import SessionData
+# src/routes/auth_routes.py (continued)
 
-logger = logging.getLogger(__name__)
+# ...
 
-async def require_session_auth(request: Request, response: Response) -> None:
-    # Validate the user's authenticated session
-    session_data: SessionData = request.state.session.get()
-    if not session_data.is_authenticated:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-
+# Session Endpoint - Route path can be whatever you prefer
+# Inject the "require_session_auth" dependency to make this a protected endpoint.
+@router.get("/api/auth/session", dependencies=[Depends(require_session_auth)])
+async def get_session(request: Request) -> SessionResponse:
     try:
-        # Check if token is expired and refresh if necessary
-        new_token_data: Optional[TokenData] = await wristband_auth.refresh_token_if_expired(
-            session_data.refresh_token,
-            session_data.expires_at
-        )
-        if new_token_data:
-            # Update session with new token data
-            session_data.access_token = new_token_data.access_token
-            session_data.refresh_token = new_token_data.refresh_token
-            session_data.expires_at = new_token_data.expires_at
-
-        # "Touch" the session cookie. Saves new token data if refresh occurred.
-        request.state.session.update(response, session_data)
-
+        return request.state.session.get_session_response(metadata={ "foo": "bar" })
     except Exception as e:
-        logger.exception(f"Session auth error during token refresh: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        logger.exception(f"Session endpoint error: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+```
+
+The Session Endpoint returns a `SessionResponse` model to your frontend:
+
+```json
+{
+  "tenantId": "tenant_abc123",
+  "userId": "user_xyz789",
+  "metadata": {
+    "foo": "bar",
+    // Any other optional data you provide...
+  }
+}
 ```
 
 <br>
 
-#### Using Authentication Dependencies
+#### Token Endpoint (Optional)
+
+> [!NOTE]
+> This endpoint is required when your frontend needs to make authenticated API requests directly to Wristband or other protected services. For more details, see the [Wristband documentation on using access tokens from the frontend](https://docs.wristband.dev/docs/authenticating-api-requests-with-bearer-tokens#using-access-tokens-from-the-frontend).
+>
+> If your application doesn't need frontend access to tokens (e.g., all API calls go through your backend), you can skip this endpoint.
+
+Some applications require the frontend to make direct API calls to Wristband or other protected services using the user's access token. The Token Endpoint provides a secure way for your frontend to retrieve the current access token and its expiration time without exposing it in the session cookie or in browser storage.
+
+Create a protected token endpoint that uses `get_token_response()` to return the token data expected by Wristband's frontend SDKs.
+
+**Make sure to protect this endpoint using the `require_session_auth` dependency you created!**
+
+```python
+# src/routes/auth_routes.py (continued)
+
+# ...
+
+# Token Endpoint - Route path can be whatever you prefer
+# Inject the "require_session_auth" dependency to make this a protected endpoint.
+@router.get("/api/auth/token", dependencies=[Depends(require_session_auth)])
+async def get_token(request: Request) -> TokenResponse:
+    try:
+        return request.state.session.get_token_response()
+    except Exception as e:
+        logger.exception(f"Token endpoint error: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+```
+
+The Token Endpoint returns a `TokenResponse` model to your frontend:
+
+```json
+{
+  "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expiresAt": 1735689600000
+}
+```
+
+Your frontend can then use the `accessToken` in the Authorization header when making API requests:
+
+```typescript
+const tokenResponse = await fetch('/api/auth/token');
+const { accessToken } = await tokenResponse.json();
+
+// Use token to call Wristband API
+const userResponse = await fetch('https://your-app.wristband.dev/api/v1/users/me', {
+  headers: {
+    'Authorization': `Bearer ${accessToken}`
+  }
+});
+```
+
+<br>
+
+### 4) Guard Your Protected APIs and Handle Token Refresh
+
+> [!NOTE]
+> If you only need JWT validation without the full authenticated session flow, check out the standalone [Wristband python-jwt](https://github.com/wristband-dev/python-jwt) library.
+
+The SDK provides `create_session_auth_dependency()` which returns a reusable FastAPI Dependency that:
+
+- Validates the user's authenticated session
+- Checks CSRF tokens to prevent cross-site request forgery attacks
+- Automatically refreshes expired access tokens
+- Updates session cookies with new token data when refresh occurs
+
+You can apply it to protect any route necessary, much like the Session Endpoint or Token Endpoint.
+
+<br>
+
+#### Using the Session Auth Dependency
 
 You can apply authentication dependencies in two ways:
 
@@ -496,7 +408,7 @@ You can apply validation to all routes within a router by adding the dependency 
 ```python
 # src/routes/protected_routes.py
 from fastapi import APIRouter, Depends
-from auth.session_auth_dependencies import require_session_auth
+from auth.wristband import require_session_auth
 
 # All routes in this router will require authentication
 router = APIRouter(dependencies=[Depends(require_session_auth)])
@@ -517,8 +429,7 @@ You can apply authentication to specific endpoints when you want granular contro
 ```python
 # src/routes/mixed_routes.py
 from fastapi import APIRouter, Depends
-from auth.session_auth_dependencies import require_session_auth
-from models.schemas import SessionData
+from auth.wristband import require_session_auth
 
 router = APIRouter()
 
@@ -552,8 +463,7 @@ For example, if you were making API calls to other services, you would pass the 
 # src/routes/example_routes.py
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from auth.session_auth_dependencies import require_session_auth
-from models.schemas import SessionData
+from auth.wristband import require_session_auth
 
 router = APIRouter()
 client = httpx.AsyncClient()
@@ -565,16 +475,17 @@ client = httpx.AsyncClient()
 )
 async def update_nickname(request: Request):
     try:
-        session_data: SessionData = request.state.session.get()
+        user_id: request.state.session.user_id
+        access_token: request.state.session.access_token
         
         # Update User API: https://docs.wristband.dev/reference/patchuserv1
         response: httpx.Response = await client.patch(
-            f"https://<your-wristband-app-vanity-domain>/api/v1/users/{session_data.user_id}",
+            f"https://<your-wristband-app-vanity-domain>/api/v1/users/{user_id}",
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 # Add access token to Authorization header
-                "Authorization": f"Bearer {session_data.access_token}",
+                "Authorization": f"Bearer {access_token}",
             },
             json={"nickname": "Smooth Criminal"},
         )
@@ -584,128 +495,6 @@ async def update_nickname(request: Request):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 ```
-
-<br>
-
-### 6) Implement CSRF Protection
-
-Cross-Site Request Forgery (CSRF) is a security vulnerability where attackers trick authenticated users into unknowingly submitting malicious requests to your application. This implementation uses the Synchronizer Token Pattern to mitigate CSRF attacks by employing two mechanisms: a session cookie for user authentication and a CSRF token cookie containing a unique token. With each request to protected endpoints, the CSRF token must be included both in the cookie (set automatically) and in the request headers (set by your frontend), enabling server-side validation to prevent CSRF attacks.
-
-Refer to the [OWASP CSRF Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) for more comprehensive information about CSRF prevention techniques.
-
-<br>
-
-#### Create Basic CSRF Utilities
-
-First, create basic utility functions to manage CSRF tokens:
-
-```python
-# src/utils/csrf.py
-import secrets
-from fastapi.responses import Response
-
-def create_csrf_token() -> str:
-    """Generate a cryptographically secure CSRF token."""
-    return secrets.token_hex(32)
-
-def update_csrf_cookie(response: Response, csrf_token: str) -> None:
-    """Set the CSRF token cookie on the response."""
-    if not csrf_token:
-        raise ValueError("[csrf_token] cannot be None")
-
-    response.set_cookie(
-        key="CSRF-TOKEN",
-        value=csrf_token,
-        httponly=False,  # Must be False so frontend JavaScript can access the value
-        max_age=1800,  # 30 minutes in seconds
-        path="/",
-        samesite="lax",
-        secure=True,  # IMPORTANT: Set this to True in Production!!!
-    )
-
-def delete_csrf_cookie(response: Response) -> None:
-    """Delete the CSRF token cookie."""
-    response.set_cookie(
-        "CSRF-TOKEN",
-        value="",
-        max_age=0,
-        httponly=False,
-        samesite="lax",
-        secure=True,  # IMPORTANT: Set this to True in Production!!!
-    )
-```
-
-#### Add CSRF Token to Session Data
-
-Update your session data model to include the CSRF token:
-
-```python
-# src/models/schemas.py (addition to existing SessionData)
-class SessionData(BaseModel):
-    # ... existing fields ...
-    csrf_token: str = Field(default="", validation_alias="csrfToken", serialization_alias="csrfToken")
-```
-
-#### Integrate CSRF in Auth Endpoints
-
-Update your auth endpoints to create, update, and delete CSRF tokens:
-
-```python
-# src/routes/auth_routes.py (key additions)
-from utils.csrf import create_csrf_token, delete_csrf_cookie, update_csrf_cookie
-
-@router.get("/callback")
-async def callback(request: Request) -> Response:
-    # ... existing callback logic ...
-    
-    # Create session data including CSRF token
-    session_data: SessionData = SessionData(
-        # ... existing fields ...
-        csrf_token=create_csrf_token(),  # <-- ADD THIS
-    )
-
-    # Set both session and CSRF cookies
-    response: Response = await wristband_auth.create_callback_response(request, "http://localhost:6001/home")
-    request.state.session.update(response, session_data)
-    update_csrf_cookie(response, session_data.csrf_token)  # <-- ADD THIS
-    return response
-
-@router.get("/logout")
-async def logout(request: Request) -> Response:
-    # ... existing logout logic ...
-    
-    # Delete both session and CSRF cookies
-    request.state.session.delete(response)
-    delete_csrf_cookie(response)  # <-- ADD THIS
-    return response
-```
-
-#### Validate CSRF in Auth Dependency
-
-Update your authentication dependency to validate CSRF tokens:
-
-```python
-# src/auth/session_auth_dependencies.py (addition to existing function)
-from utils.csrf import create_csrf_token, delete_csrf_cookie, update_csrf_cookie
-
-async def require_session_auth(request: Request, response: Response) -> None:
-    # ... existing session validation ...
-
-    # ADD THIS: Validate CSRF token
-    header_csrf_token = request.headers.get("X-CSRF-TOKEN")
-    if not session_data.csrf_token or not header_csrf_token or session_data.csrf_token != header_csrf_token:
-        logger.warning(f"CSRF token validation failed for request to {request.url.path}")
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-
-    # ... rest of existing logic ...
-    
-    # Update both session and CSRF cookies
-    request.state.session.update(response, session_data)
-    update_csrf_cookie(response, session_data.csrf_token)  # <-- ADD THIS
-```
-
-> [!NOTE]
-> Your frontend application will need to read the CSRF token from the CSRF-TOKEN cookie and include it in the X-CSRF-TOKEN header for all requests to protected endpoints. Consult your frontend framework's documentation for cookie handling and HTTP header management.
 
 <br>
 
@@ -807,24 +596,24 @@ except WristbandError as error:
 
 <br>
 
-## API
+## Auth API
 
-### `async def login(self, req: Request, config: LoginConfig = LoginConfig()) -> Response:`
+### `async def login(self, request: Request, config: LoginConfig = LoginConfig()) -> Response:`
 
 ```python
-response: Response = await wristband_auth.login(req=request)
+response: Response = await wristband_auth.login(request)
 ```
 
-Wristband requires that your application specify a Tenant-Level domain when redirecting to the Wristband Authorize Endpoint when initiating an auth request. When the frontend of your application redirects the user to your FastAPI Login Endpoint, there are two ways to accomplish getting the `tenant_domain_name` information: passing a query parameter or using tenant subdomains.
+Wristband requires that your application specify a Tenant-Level domain when redirecting to the Wristband Authorize Endpoint when initiating an auth request. When the frontend of your application redirects the user to your FastAPI Login Endpoint, there are two ways to accomplish getting the `tenant_name` information: passing a query parameter or using tenant subdomains.
 
 The `login()` method can also take optional configuration if your application needs custom behavior:
 
 | LoginConfig Field | Type | Required | Description |
 | ----------------- | ---- | -------- | ----------- |
 | custom_state | Optional[dict[str, Any]] | No | Additional state to be saved in the Login State Cookie. Upon successful completion of an auth request/login attempt, your Callback Endpoint will return this custom state (unmodified) as part of the return type. |
-| default_tenant_domain_name | str | No | An optional default tenant domain name to use for the login request in the event the tenant domain cannot be found in either the subdomain or query parameters (depending on your subdomain configuration). |
+| default_tenant_name | str | No | An optional default tenant name to use for the login request in the event the tenant name cannot be found in either the subdomain or query parameters (depending on your subdomain configuration). |
 | default_tenant_custom_domain | str | No | An optional default tenant custom domain to use for the login request in the event the tenant custom domain cannot be found in the query parameters. |
-| return_url | string | No | The URL to return to after authentication is completed. If a value is provided, then it takes precedence over the `return_url` request query parameter. |
+| return_url | str | No | The URL to return to after authentication is completed. If a value is provided, then it takes precedence over the `return_url` request query parameter. |
 
 #### Which Domains Are Used in the Authorize URL?
 
@@ -834,7 +623,7 @@ Wristband supports various tenant domain configurations, including subdomains an
 2. Tenant subdomain in the URL: Used if `parse_tenant_from_root_domain` is specified and there is a subdomain present in the host.
 3. `tenant_domain` query parameter: Evaluated if no tenant subdomain is found in the host.
 4. `default_tenant_custom_domain` in LoginConfig: Used if none of the above are present.
-5. `default_tenant_domain` in LoginConfig: Used as the final fallback.
+5. `default_tenant_name` in LoginConfig: Used as the final fallback.
 
 If none of these are specified, the SDK redirects users to the Application-Level Login (Tenant Discovery) Page.
 
@@ -881,14 +670,14 @@ auth_config = AuthConfig(
 )
 ```
 
-#### Default Tenant Domain Name
+#### Default Tenant Name
 
-For certain use cases, it may be useful to specify a default tenant domain in the event that the `login()` method cannot find a tenant domain in either the query parameters or in the URL subdomain. You can specify a fallback default tenant domain via a `LoginConfig` object:
+For certain use cases, it may be useful to specify a default tenant name in the event that the `login()` method cannot find a tenant name in either the query parameters or in the URL subdomain. You can specify a fallback default tenant name via a `LoginConfig` object:
 
 ```python
 response: Response = await wristband_auth.login(
-    req=request, 
-    config=LoginConfig(default_tenant_domain_name="default")
+    request=request, 
+    config=LoginConfig(default_tenant_name="default")
 )
 ```
 
@@ -908,7 +697,7 @@ For certain use cases, it may be useful to specify a default tenant custom domai
 
 ```python
 response: Response = await wristband_auth.login(
-    req=request, 
+    request=request, 
     config=LoginConfig(default_tenant_custom_domain="mytenant.com")
 )
 ```
@@ -921,7 +710,7 @@ Before your Login Endpoint redirects to Wristband, it will create a Login State 
 
 ```python
 response: Response = await wristband_auth.login(
-    req=request, 
+    request=request, 
     config=LoginConfig(custom_state={"test": "abc"})
 )
 ```
@@ -947,7 +736,7 @@ Given that your frontend will redirect users to your Login Endpoint, you can eit
 
 ```python
 response: Response = await wristband_auth.login(
-    req=request, 
+    request=request, 
     config=LoginConfig(return_url="test")
 )
 ```
@@ -966,10 +755,10 @@ When the `login()` method cannot resolve a tenant domain from the request (subdo
 
 <br>
 
-### `async def callback(self, req: Request) -> CallbackResult:`
+### `async def callback(self, request: Request) -> CallbackResult:`
 
 ```python
-callback_result: CallbackResult = await wristband_auth.callback(req=request)
+callback_result: CallbackResult = await wristband_auth.callback(request)
 response: Response = await wristband_auth.create_callback_response(request, redirect_url="https://yourapp.io/home")
 ```
 
@@ -999,7 +788,7 @@ When the callback returns a `COMPLETED` result, all of the token and userinfo da
 
 | CallbackData Field | Type | Description |
 | ------------------ | ---- | ----------- |
-| access_token | string | The access token that can be used for accessing Wristband APIs as well as protecting your application's backend APIs. |
+| access_token | str | The access token that can be used for accessing Wristband APIs as well as protecting your application's backend APIs. |
 | custom_state | Optional[dict[str, Any]] | If you injected custom state into the Login State Cookie during the Login Endpoint for the current auth request, then that same custom state will be returned in this field. |
 | expires_at | int | The absolute expiration time of the access token in milliseconds since the Unix epoch. The `token_expiration_buffer` SDK configuration is accounted for in this value. |
 | expires_in | int | The durtaion from the current time until the access token is expired (in seconds). The `token_expiration_buffer` SDK configuration is accounted for in this value. |
@@ -1007,7 +796,7 @@ When the callback returns a `COMPLETED` result, all of the token and userinfo da
 | refresh_token | Optional[str] | The refresh token that renews expired access tokens with Wristband, maintaining continuous access to services. |
 | return_url | Optional[str] | The URL to return to after authentication is completed. |
 | tenant_custom_domain | Optional[str] | The tenant custom domain for the tenant that the user belongs to (if applicable). |
-| tenant_domain_name | str | The domain name of the tenant the user belongs to. |
+| tenant_name | str | The name of the tenant the user belongs to. |
 | user_info | dict[str, Any] | Data for the current user retrieved from the Wristband Userinfo Endpoint. The data returned in this object follows the format laid out in the [Wristband Userinfo Endpoint documentation](https://docs.wristband.dev/reference/userinfov1). The exact fields that get returned are based on the scopes you configured in the SDK. |
 
 
@@ -1028,7 +817,7 @@ For the case of the `COMPLETED` result type, there is a second method called `cr
 
 ```python
 const appUrl = callback_result.callback_data.returnUrl or 'https://yourapp.io/home'
-response: Response = await wristband_auth.create_callback_response(req, appUrl)
+response: Response = await wristband_auth.create_callback_response(request, appUrl)
 ```
 
 #### Error Parameters
@@ -1054,11 +843,11 @@ For all other error types, the SDK will throw a `WristbandError` object (contain
 
 <br>
 
-### `async def logout(self, req: Request, config: LogoutConfig = LogoutConfig()) -> Response:`
+### `async def logout(self, request: Request, config: LogoutConfig = LogoutConfig()) -> Response:`
 
 ```python
 response: Response = await wristband_auth.logout(
-    req=request,
+    request=request,
     config=LogoutConfig(refresh_token="98yht308hf902hc90wh09")
 )
 return response
@@ -1078,15 +867,15 @@ If your application created a session, it should destroy it before invoking the 
 | refresh_token | Optional[str] | No | The refresh token to revoke. |
 | state | Optional[str] | No | Optional value that will be appended as a query parameter to the resolved logout URL, if provided. Maximum length of 512 characters. |
 | tenant_custom_domain | Optional[str] | No | The tenant custom domain for the tenant that the user belongs to (if applicable). |
-| tenant_domain_name | Optional[str] | No | The domain name of the tenant the user belongs to. |
+| tenant_name | Optional[str] | No | The name of the tenant the user belongs to. |
 
 #### Which Domains Are Used in the Logout URL?
 
 Wristband supports various tenant domain configurations, including subdomains and custom domains. The SDK automatically determines the appropriate domain configuration when constructing the Wristband Logout URL, which your login endpoint will redirect users to during the logout flow. The selection follows this precedence order:
 
 1. `tenant_custom_domain` in LogoutConfig: If provided, this takes top priority.
-2. `tenant_domain_name` in LogoutConfig: This takes the next priority if `tenant_custom_domain` is not present.
-3. `tenant_custom_domain` query parameter: Evaluated if present and there is also no LogoutConfig provided for either `tenant_custom_domain` or `tenant_domain_name`.
+2. `tenant_name` in LogoutConfig: This takes the next priority if `tenant_custom_domain` is not present.
+3. `tenant_custom_domain` query parameter: Evaluated if present and there is also no LogoutConfig provided for either `tenant_custom_domain` or `tenant_name`.
 4. Tenant subdomain in the URL: Used if none of the above are present, and `parse_tenant_from_root_domain` is specified, and the subdomain is present in the host.
 5. `tenant_domain` query parameter: Used as the final fallback.
 
@@ -1096,16 +885,16 @@ If none of these are specified, the SDK redirects users to the Application-Level
 
 If your application requested refresh tokens during the Login Workflow (via the `offline_access` scope), it is crucial to revoke the user's access to that refresh token when logging out. Otherwise, the refresh token would still be valid and able to refresh new access tokens.  You should pass the refresh token into the LogoutConfig when invoking the `logout()` method, and the SDK will call to the [Wristband Revoke Token Endpoint](https://docs.wristband.dev/reference/revokev1) automatically.
 
-#### Resolving Tenant Domain Names
+#### Resolving Tenant Domains
 
-Much like the Login Endpoint, Wristband requires your application specify a Tenant-Level domain when redirecting to the [Wristband Logout Endpoint](https://docs.wristband.dev/reference/logoutv1). If your application does not utilize tenant subdomains, then you can either explicitly pass it into the LogoutConfig:
+Much like the Login Endpoint, Wristband requires your application specify a Tenant-Level domain when redirecting to the [Wristband Logout Endpoint](https://docs.wristband.dev/reference/logoutv1). If your application does not utilize tenant subdomains, then you can either explicitly pass a tenant name into the LogoutConfig:
 
 ```python
 response: Response = await wristband_auth.logout(
-    req=request,
+    request=request,
     config=LogoutConfig(
         refresh_token="98yht308hf902hc90wh09",
-        tenant_domain_name="customer01"
+        tenant_name="customer01"
     )
 )
 ```
@@ -1115,12 +904,12 @@ response: Response = await wristband_auth.logout(
 ```python
 # Logout Request URL -> "https://yourapp.io/auth/logout?client_id=123&tenant_domain=customer01"
 response: Response = await wristband_auth.logout(
-    req=request,
+    request=request,
     config=LogoutConfig(refresh_token="98yht308hf902hc90wh09")
 )
 ```
 
-If your application uses tenant subdomains, then passing the `tenant_domain_name` field to the LogoutConfig is not required since the SDK will automatically parse the subdomain from the URL as long as the `parse_tenant_from_root_domain` SDK config is set.
+If your application uses tenant subdomains, then passing the `tenant_name` field to the LogoutConfig is not required since the SDK will automatically parse the subdomain from the URL as long as the `parse_tenant_from_root_domain` SDK config is set.
 
 #### Tenant Custom Domains
 
@@ -1128,7 +917,7 @@ If you have a tenant that relies on a tenant custom domain, then you can either 
 
 ```python
 response: Response = await wristband_auth.logout(
-    req=request,
+    request=request,
     config=LogoutConfig(
         refresh_token="98yht308hf902hc90wh09",
         tenant_custom_domain="customer01.com"
@@ -1141,12 +930,12 @@ response: Response = await wristband_auth.logout(
 ```python
 # Logout Request URL -> "https://yourapp.io/auth/logout?client_id=123&tenant_custom_domain=customer01.com"
 response: Response = await wristband_auth.logout(
-    req=request,
+    request=request,
     config=LogoutConfig(refresh_token="98yht308hf902hc90wh09")
 )
 ```
 
-If your application supports a mixture of tenants that use tenant subdomains and tenant custom domains, then you should consider passing both the tenant domain names and tenant custom domains (either via LogoutConfig or by query parameters) to ensure all use cases are handled by the SDK.
+If your application supports a mixture of tenants that use tenant subdomains and tenant custom domains, then you should consider passing both the tenant names and tenant custom domains (either via LogoutConfig or by query parameters) to ensure all use cases are handled by the SDK.
 
 #### Preserving State After Logout
 
@@ -1154,10 +943,10 @@ The `state` field in the `LogoutConfig` allows you to preserve application state
 
 ```python
 response: Response = await wristband_auth.logout(
-    req=request,
+    request=request,
     config=LogoutConfig(
         refresh_token="98yht308hf902hc90wh09",
-        tenant_domain_name="customer01",
+        tenant_name="customer01",
         state="user_initiated_logout"
     )
 )
@@ -1183,10 +972,10 @@ Some applications might require the ability to land on a different page besides 
 
 ```python
 response: Response = await wristband_auth.logout(
-    req=request,
+    request=request,
     config=LogoutConfig(
         refresh_token="98yht308hf902hc90wh09",
-        tenant_domain_name="customer01",
+        tenant_name="customer01",
         redirect_url="https://custom-logout.com"
     )
 )
@@ -1216,11 +1005,322 @@ The `TokenData` is defined as follows:
 
 | TokenData Field | Type | Description |
 | --------------- | ---- | ----------- |
-| access_token | string | The access token that can be used for accessing Wristband APIs as well as protecting your application's backend APIs. |
+| access_token | str | The access token that can be used for accessing Wristband APIs as well as protecting your application's backend APIs. |
 | expires_at | int | The absolute expiration time of the access token in milliseconds since the Unix epoch. The `token_expiration_buffer` SDK configuration is accounted for in this value. |
 | expires_in | int | The durtaion from the current time until the access token is expired (in seconds). The `token_expiration_buffer` SDK configuration is accounted for in this value. |
 | id_token | str | The ID token uniquely identifies the user that is authenticating and contains claim data about the user. |
 | refresh_token | Optional[str] | The refresh token that renews expired access tokens with Wristband, maintaining continuous access to services. |
+
+<br>
+
+## Session Management
+
+The SDK provides encrypted cookie-based session management through the `SessionMiddleware` and `Session` class. Sessions are automatically attached to `request.state.session` on every request and provide a dict-like interface for storing user data. All session data is encrypted using AES-256-GCM before being stored in cookies.
+
+### Session Configuration
+
+Configure session behavior when adding the middleware:
+
+```python
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="your-secret-key",
+    session_cookie_name="session",
+    session_cookie_domain=".example.com",
+    csrf_cookie_name="CSRF-TOKEN",
+    csrf_cookie_domain=".example.com",
+    max_age=3600,
+    path="/",
+    same_site="lax",
+    secure=True,
+)
+```
+
+| Parameter | Type | Required | Default | Description |
+| --------- | ---- | -------- | ------- | ----------- |
+| secret_key | str | Yes | N/A | Secret key for session encryption (minimum 32 characters) |
+| session_cookie_name | str | No | "session" | Name of the session cookie |
+| session_cookie_domain | Optional[str] | No | None | Domain for the session cookie |
+| csrf_cookie_name | str | No | "CSRF-TOKEN" | Name of the CSRF cookie |
+| csrf_cookie_domain | Optional[str] | No | None | Domain for CSRF cookie (defaults to session_cookie_domain)
+| max_age | int | No | 3600 (1 hour) | Cookie expiration time in seconds |
+| path | str | No | "/" | Cookie path |
+| same_site | Literal["lax", "strict", "none"] | No | "lax" | Cookie SameSite attribute |
+| secure | bool | No | True | Require HTTPS for cookies. **Set `secure=True` in production to ensure cookies are only sent over HTTPS.** |
+
+> [!TIP]
+> **Cross-Origin Requests**: If your frontend makes requests from a different subdomain (e.g., `app.example.com` calling APIs on `api.example.com`), you may need to set `csrf_cookie_domain=".example.com"` (with the leading dot) to allow the CSRF cookie to be accessible across subdomains. The session cookie should typically remain more restrictive.
+
+<br>
+
+### Accessing Sessions
+
+Once `SessionMiddleware` is configured, every request automatically has a session object attached at `request.state.session`. This session object provides a dict-like interface for reading and writing session data. All session data is automatically encrypted before being stored in cookies, and decrypted when loaded. Session modifications are persisted to cookies after your route handler completes.
+
+#### Access Patterns
+
+Sessions support standard dictionary operations **and** attribute-style access for getting, setting, checking, and deleting values:
+
+```python
+# Set values (dict-style)
+request.state.session["user_id"] = "123"
+request.state.session["cart"] = {"items": [], "total": 0}
+
+# Set values (attribute-style)
+request.state.session.user_id = "123"
+request.state.session.cart = {"items": [], "total": 0}
+
+# Get values (dict-style)
+user_id = request.state.session["user_id"]
+cart = request.state.session.get("cart")  # Returns None if missing
+role = request.state.session.get("role", "guest")  # With default
+
+# Get values (attribute-style)
+user_id = request.state.session.user_id
+cart = request.state.session.cart  # Returns None if missing
+
+# Check existence
+if "cart" in request.state.session:
+    cart = request.state.session["cart"]
+
+# Delete values (dict-style)
+del request.state.session["old_key"]
+
+# Iterate over keys
+for key in request.state.session:
+    print(f"{key}: {request.state.session[key]}")
+
+# Get number of items
+item_count = len(request.state.session)
+```
+
+#### Limitations
+
+**JSON Serialization:** All values stored in the session must be JSON-serializable. Attempting to store non-serializable values (like functions, file objects, or custom class instances) will raise a `ValueError`.
+
+**Size Limit:** Sessions are limited to 4KB total, including encryption overhead and cookie attributes. This limit is enforced by the browser per [RFC 6265](https://datatracker.ietf.org/doc/html/rfc6265). If your session data exceeds this limit, a `ValueError` is raised with details about the data size and overhead. If you need to store larger amounts of data, consider:
+- Storing only essential data in the session (IDs, tokens, minimal user info)
+- Using a database-backed session library (like starsessions)
+- Storing large data in a database and keeping only a reference ID in the session
+
+<br>
+
+### Session API
+
+#### `request.state.session.get(key, default=None)`
+
+Get a session value with an optional default.
+
+```python
+user_id = request.state.session.get("user_id")
+role = request.state.session.get("role", "guest")
+```
+
+<br>
+
+#### `request.state.session.to_dict()`
+
+Get a shallow copy of all session data as a dictionary.
+
+```python
+session_data = request.state.session.to_dict()
+# Returns: {"user_id": "123", "tenant_id": "abc", ...}
+```
+
+<br>
+
+#### `request.state.session.from_callback(callback_data, custom_fields=None)`
+
+Create a session from Wristband callback data after successful authentication. This is a convenience method that automatically:
+
+- Extracts a core subset of user and tenant info from callback data
+- Generates a CSRF token to store in both the session and CSRF cookies
+- Marks the session for persistence in an encrypted session cookie
+
+| Parameters | Type | Required | Default | Description |
+| ---------- | ---- | -------- | ------- | ----------- |
+| callback_data | `CallbackData` | Yes | N/A | The callback data from `wristband_auth.callback()`. A `ValueError` is raised if `callback_data` is None or `callback_data.user_info` is missing. |
+| custom_fields | Optional[Dict[str, Any]] | No | None | Additional fields to store. A `ValueError` is raised if `custom_fields` aren't JSON-serializable. |
+
+```python
+# Basic usage
+callback_result = await wristband_auth.callback(request)
+request.state.session.from_callback(callback_result.callback_data)
+
+# With custom fields
+request.state.session.from_callback(
+    callback_data=callback_result.callback_data,
+    custom_fields={
+        "role": "admin",
+        "preferences": {"theme": "dark"},
+        "last_login": 1735689600000
+    }
+)
+```
+
+The following fields from the callback data are automatically stored in the session:
+
+- `is_authenticated` (always set to `True`)
+- `access_token`
+- `expires_at`
+- `user_id`
+- `tenant_id`
+- `tenant_name`
+- `csrf_token` (auto-generated CSRF token)
+- `refresh_token` (only if `offline_access` scope was requested)
+- `tenant_custom_domain` (only if a tenant custom domain was used during authentication)
+
+<br>
+
+#### `request.state.session.save()`
+
+Mark the session for persistence. This refreshes the cookie expiration time (rolling sessions) and saves any modifications made to session data. Use `save()` when manually modifying session data or implementing rolling sessions.
+
+```python
+# After modifying session
+request.state.session.last_activity = time.time()
+request.state.session.save()
+
+# Extend session without modification (rolling sessions)
+if request.state.session.get("is_authenticated"):
+    request.state.session.save()
+```
+
+<br>
+
+#### `request.state.session.clear()`
+
+Delete the session and clear all cookies (both session and CSRF). Use this when logging users out.
+
+```python
+@router.get("/logout")
+async def logout(request: Request):
+    request.state.session.clear()
+    return RedirectResponse("/login")
+```
+
+<br>
+
+#### `request.state.session.get_session_response(metadata=None)`
+
+Create a `SessionResponse` for Wristband frontend SDKs. This method is typically used in your Session Endpoint.  An `HTTPException` with 401 status if `tenant_id` or `user_id` are missing from the session.
+
+| Parameters | Type | Required | Default | Description |
+| ---------- | ---- | -------- | ------- | ----------- |
+| metadata | Optional[Dict[str, Any]] | No | None | Custom metadata to include **(must be JSON-serializable)**. |
+
+```python
+@router.get("/api/v1/session", dependencies=[Depends(require_session_auth)])
+async def get_session(request: Request) -> SessionResponse:
+    return request.state.session.get_session_response(
+        metadata={
+            "name": request.state.session.full_name,
+            "preferences": request.state.session.preferences
+        }
+    )
+```
+
+##### `SessionResponse`
+
+Returned by `get_session_response()`. The response format matches what Wristband frontend SDKs expect from Session Endpoints.
+
+| SessionResponse Field | Type | Description | Serialized As |
+| --------------------- | ---- | ----------- | ------------- |
+| user_id | str | The ID of the user who authenticated. | "userId" |
+| tenant_id | str | The ID of the tenant that the authenticated user belongs to. | "tenantId" |
+| metadata | Optional[Dict[str, Any]] | Any included custom session metadata. Defaults to an empty dict if none was provided. | "metadata" |
+
+<br>
+
+#### `request.state.session.get_token_response()`
+
+Create a `TokenResponse` for Wristband frontend SDKs. This method is typically used in your Token Endpoint. An `HTTPException` with 401 status if `access_token` or `expires_at` are missing from the session.
+
+```python
+@router.get("/api/v1/token", dependencies=[Depends(require_session_auth)])
+async def get_token(request: Request) -> TokenResponse:
+    return request.state.session.get_token_response()
+```
+
+##### `TokenResponse`
+
+Returned by `get_token_response()`. The response format matches what Wristband frontend SDKs expect from Token Endpoints.
+
+| TokenResponse Field | Type | Description | Serialized As |
+| ------------------- | ---- | ----------- | ------------- |
+| access_token | str | The access token that can be used for accessing Wristband APIs as well as protecting your application's backend APIs. | "accessToken" |
+| expires_at | int | The absolute expiration time of the access token in milliseconds since the Unix epoch. The `token_expiration_buffer` SDK configuration is accounted for in this value. | "expiresAt" |
+
+<br>
+
+### CSRF Protection
+
+When you create a session using `from_callback()`, the SDK automatically generates a CSRF token and stores it in two locations:
+
+1. **Session cookie** (encrypted, HttpOnly): Contains the CSRF token as part of the encrypted session data
+2. **CSRF cookie** (unencrypted, readable by JavaScript): Contains the same CSRF token in plaintext
+
+This dual-cookie approach follows the Synchronizer Token Pattern:
+- The session cookie proves the user is authenticated (server-side validation)
+- The CSRF cookie must be read by your frontend and sent in request headers (client-side participation)
+
+**Frontend Implementation:**
+
+Your frontend must read the CSRF token from the CSRF cookie and include it a CSRF header (i.e., `X-CSRF-TOKEN`) for all state-changing requests. For example:
+
+```javascript
+// Read CSRF token from cookie
+const csrfToken = document.cookie
+  .split('; ')
+  .find(row => row.startsWith('CSRF-TOKEN='))
+  ?.split('=')[1];
+
+// Include in requests
+fetch('/api/protected-endpoint', {
+  method: 'POST',
+  headers: {
+    'X-CSRF-TOKEN': csrfToken,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ data: 'example' })
+});
+```
+
+#### Automatic Validation
+
+When you use the `require_session_auth` dependency created by `wristband_auth.create_session_auth_dependency()`, CSRF validation happens automatically on every request. The dependency:
+
+1. Validates the user's authenticated session exists.
+2. Compares the CSRF token from the `X-CSRF-TOKEN` header with the token stored in the session.
+3. Automatically refreshes expired access tokens, if needed.
+4. Updates session cookies with refreshed token data.
+
+If CSRF validation fails, the request is rejected with a 403 Forbidden status.
+
+```python
+# CSRF is validated automatically when using require_session_auth
+@router.post("/api/data", dependencies=[Depends(require_session_auth)])
+async def update_data(request: Request, data: UpdateData):
+    # By the time your handler runs, CSRF has been validated
+    request.state.session.last_update = time.time()
+    request.state.session.save()
+    return {"status": "success"}
+```
+
+> [!NOTE]
+> Read-only endpoints (GET requests) typically don't require CSRF protection, but you can still use `require_session_auth` to ensure the user is authenticated and the rolling session expiration gets extended.
+
+<br>
+
+## JWT Token Validation
+
+If you only need to validate JWT access tokens issued by Wristband (without the full authentication flow), use the standalone [python-jwt](https://github.com/wristband-dev/python-jwt) library. This is useful for:
+
+- Microservices that receive tokens from your main application
+- Backend services that only need to verify tokens, not issue them
+- APIs that validate tokens in the `Authorization` header
+
+The `python-jwt` library provides lightweight JWT validation with public key caching and is designed specifically for Wristband tokens.
 
 <br>
 

@@ -4,15 +4,16 @@ import logging
 import secrets
 import time
 from datetime import datetime
-from typing import Any, Literal, Optional, Tuple
+from typing import Any, Awaitable, Callable, Literal, Optional, Tuple
 from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from .client import WristbandApiClient
 from .config_resolver import ConfigResolver
+from .csrf import is_csrf_token_valid
 from .exceptions import InvalidGrantError, WristbandError
 from .models import (
     AuthConfig,
@@ -24,10 +25,10 @@ from .models import (
     LogoutConfig,
     OAuthAuthorizeUrlConfig,
     TokenData,
-    TokenResponse,
     UserInfo,
+    WristbandTokenResponse,
 )
-from .utils import SessionEncryptor
+from .utils import DataEncryptor
 
 _logger: logging.Logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class WristbandAuth:
             client_id=self._config_resolver.get_client_id(),
             client_secret=self._config_resolver.get_client_secret(),
         )
-        self._login_state_encryptor = SessionEncryptor(secret_key=self._config_resolver.get_login_state_secret())
+        self._login_state_encryptor = DataEncryptor(secret_key=self._config_resolver.get_login_state_secret())
 
     #################################
     #  DISCOVER
@@ -80,7 +81,7 @@ class WristbandAuth:
     #  LOGIN
     #################################
 
-    async def login(self, req: Request, config: LoginConfig = LoginConfig()) -> Response:
+    async def login(self, request: Request, config: LoginConfig = LoginConfig()) -> Response:
         """
         Initiates a login request by redirecting to Wristband. Constructs an OAuth2 Authorization
         Request to begin the Authorization Code flow.
@@ -95,7 +96,7 @@ class WristbandAuth:
           Authorize URL if not using tenant custom domains.
 
         Args:
-            req (Request): The FastAPI request object.
+            request (Request): The FastAPI request object.
             config (LoginConfig, optional): Additional configuration for the login request,
                 including default tenant domain and custom state.
 
@@ -115,20 +116,20 @@ class WristbandAuth:
         wristband_application_vanity_domain = self._config_resolver.get_wristband_application_vanity_domain()
 
         # Determine which domain-related values are present as it will be needed for the authorize URL.
-        tenant_custom_domain: str = self._resolve_tenant_custom_domain_param(req)
-        tenant_domain_name: str = self._resolve_tenant_domain_name(req, parse_tenant_from_root_domain)
+        tenant_custom_domain: str = self._resolve_tenant_custom_domain_param(request)
+        tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain)
         default_tenant_custom_domain: Optional[str] = config.default_tenant_custom_domain
-        default_tenant_domain_name: Optional[str] = config.default_tenant_domain
+        default_tenant_name: Optional[str] = config.default_tenant_name
 
-        resovled_return_url: Optional[str] = self._resolve_return_url(req, config.return_url)
+        resovled_return_url: Optional[str] = self._resolve_return_url(request, config.return_url)
 
         # In the event we cannot determine either a tenant custom domain or subdomain, send the user to app-level login.
         if not any(
             [
                 tenant_custom_domain,
-                tenant_domain_name,
+                tenant_name,
                 default_tenant_custom_domain,
-                default_tenant_domain_name,
+                default_tenant_name,
             ]
         ):
             app_login_url: str = (
@@ -147,7 +148,7 @@ class WristbandAuth:
 
         # Create the Wristband Authorize Endpoint URL which the user will get redirectd to.
         authorize_url: str = self._get_oauth_authorize_url(
-            req,
+            request=request,
             config=OAuthAuthorizeUrlConfig(
                 client_id=client_id,
                 redirect_uri=redirect_uri,
@@ -155,9 +156,9 @@ class WristbandAuth:
                 scopes=scopes,
                 state=login_state.state,
                 default_tenant_custom_domain=default_tenant_custom_domain,
-                default_tenant_domain_name=default_tenant_domain_name,
+                default_tenant_name=default_tenant_name,
                 tenant_custom_domain=tenant_custom_domain,
-                tenant_domain_name=tenant_domain_name,
+                tenant_name=tenant_name,
                 is_application_custom_domain_active=is_application_custom_domain_active,
                 wristband_application_vanity_domain=wristband_application_vanity_domain,
             ),
@@ -169,7 +170,7 @@ class WristbandAuth:
         authorize_response.headers["Pragma"] = "no-cache"
 
         # Clear any stale login state cookies and add a new one for the current request.
-        self._clear_oldest_login_state_cookie(req, authorize_response, dangerously_disable_secure_cookies)
+        self._clear_oldest_login_state_cookie(request, authorize_response, dangerously_disable_secure_cookies)
         encrypted_login_state: str = self._encrypt_login_state(login_state)
 
         # Create the login state cookie
@@ -187,7 +188,7 @@ class WristbandAuth:
     #  CALLBACK
     #################################
 
-    async def callback(self, req: Request) -> CallbackResult:
+    async def callback(self, request: Request) -> CallbackResult:
         """
         Handles the OAuth2 callback from Wristband. Exchanges the authorization code for tokens
         and retrieves user information for the authenticated user.
@@ -203,7 +204,7 @@ class WristbandAuth:
           that don't rely on tenant subdomains or custom domains.
 
         Args:
-            req (Request): The FastAPI request object containing the callback query parameters.
+            request (Request): The FastAPI request object containing the callback query parameters.
 
         Returns:
             CallbackResult: An object representing the outcome of the callback process,
@@ -216,11 +217,11 @@ class WristbandAuth:
         token_expiration_buffer = self._config_resolver.get_token_expiration_buffer()
 
         # Extract and validate Query Params from wristband callback
-        code: Optional[str] = self._assert_single_param(req, "code")
-        param_state: Optional[str] = self._assert_single_param(req, "state")
-        error: Optional[str] = self._assert_single_param(req, "error")
-        error_description: Optional[str] = self._assert_single_param(req, "error_description")
-        tenant_custom_domain_param: Optional[str] = self._assert_single_param(req, "tenant_custom_domain")
+        code: Optional[str] = self._assert_single_param(request, "code")
+        param_state: Optional[str] = self._assert_single_param(request, "state")
+        error: Optional[str] = self._assert_single_param(request, "error")
+        error_description: Optional[str] = self._assert_single_param(request, "error_description")
+        tenant_custom_domain_param: Optional[str] = self._assert_single_param(request, "tenant_custom_domain")
 
         if not param_state or not isinstance(param_state, str):
             raise TypeError("Invalid query parameter [state] passed from Wristband during callback")
@@ -234,8 +235,8 @@ class WristbandAuth:
             raise TypeError("Invalid query parameter [tenant_custom_domain] passed from Wristband during callback")
 
         # Resolve and validate tenant domain name
-        resolved_tenant_domain_name: str = self._resolve_tenant_domain_name(req, parse_tenant_from_root_domain)
-        if not resolved_tenant_domain_name:
+        resolved_tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain)
+        if not resolved_tenant_name:
             if parse_tenant_from_root_domain:
                 raise WristbandError("missing_tenant_subdomain", "Callback request URL is missing a tenant subdomain")
             else:
@@ -243,9 +244,9 @@ class WristbandAuth:
 
         # Build the tenant login URL in case we need to redirect
         if parse_tenant_from_root_domain:
-            tenant_login_url: str = login_url.replace("{tenant_domain}", resolved_tenant_domain_name)
+            tenant_login_url: str = login_url.replace("{tenant_domain}", resolved_tenant_name)
         else:
-            tenant_login_url = f"{login_url}?tenant_domain={resolved_tenant_domain_name}"
+            tenant_login_url = f"{login_url}?tenant_domain={resolved_tenant_name}"
 
         # If the tenant_custom_domain is set, add that query param
         if tenant_custom_domain_param:
@@ -254,7 +255,7 @@ class WristbandAuth:
             tenant_login_url = f"{tenant_login_url}{connector}tenant_custom_domain={tenant_custom_domain_param}"
 
         # Retrieve and decrypt the login state cookie
-        _, login_state_cookie_val = self._get_login_state_cookie(req)
+        _, login_state_cookie_val = self._get_login_state_cookie(request)
 
         # Create a redirect result in the event of any edge cases.
         redirect_callback_result = CallbackResult(
@@ -285,7 +286,7 @@ class WristbandAuth:
 
         try:
             # Call Wristband Token API
-            token_response: TokenResponse = await self._wristband_api.get_tokens(
+            token_response: WristbandTokenResponse = await self._wristband_api.get_tokens(
                 code=code,
                 redirect_uri=login_state.redirect_uri,
                 code_verifier=login_state.code_verifier,
@@ -307,7 +308,7 @@ class WristbandAuth:
                     id_token=token_response.id_token,
                     expires_at=expires_at,
                     expires_in=expires_in,
-                    tenant_domain_name=resolved_tenant_domain_name,
+                    tenant_name=resolved_tenant_name,
                     user_info=userinfo,
                     custom_state=login_state.custom_state,
                     refresh_token=token_response.refresh_token,
@@ -324,12 +325,12 @@ class WristbandAuth:
     #  CREATE CALLBACK RESPONSE
     #################################
 
-    async def create_callback_response(self, req: Request, redirect_url: str) -> Response:
+    async def create_callback_response(self, request: Request, redirect_url: str) -> Response:
         """
         Constructs the redirect response to your application and cleans up the login state.
 
         Args:
-            req (Request): The FastAPI request object.
+            request (Request): The FastAPI request object.
             redirect_url (str): The location for your application that you want to send users to.
 
         Returns:
@@ -346,7 +347,7 @@ class WristbandAuth:
         redirect_response.headers["Cache-Control"] = "no-store"
         redirect_response.headers["Pragma"] = "no-cache"
 
-        login_state_cookie_name, _ = self._get_login_state_cookie(req)
+        login_state_cookie_name, _ = self._get_login_state_cookie(request)
         if login_state_cookie_name:
             self._clear_login_state_cookie(
                 res=redirect_response,
@@ -360,13 +361,13 @@ class WristbandAuth:
     #  LOGOUT
     #################################
 
-    async def logout(self, req: Request, config: LogoutConfig = LogoutConfig()) -> Response:
+    async def logout(self, request: Request, config: LogoutConfig = LogoutConfig()) -> Response:
         """
         Logs the user out by revoking their refresh token (if provided) and constructing a redirect
         URL to Wristband's Logout Endpoint.
 
         Args:
-            req (Request): The FastAPI request object containing user session or token data.
+            request (Request): The FastAPI request object containing user session or token data.
             config (LogoutConfig, optional): Optional configuration parameters for the logout process,
             such as a custom return URL or tenant domain.
 
@@ -393,8 +394,8 @@ class WristbandAuth:
             raise ValueError("The [state] logout config cannot exceed 512 characters.")
 
         # Get host and determine tenant domain
-        tenant_domain_name: str = self._resolve_tenant_domain_name(req, parse_tenant_from_root_domain)
-        tenant_custom_domain: str = self._resolve_tenant_custom_domain_param(req)
+        tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain)
+        tenant_custom_domain: str = self._resolve_tenant_custom_domain_param(request)
 
         separator: Literal[".", "-"] = "." if is_application_custom_domain_active else "-"
         redirect_url = f"&redirect_url={config.redirect_url}" if config.redirect_url else ""
@@ -402,7 +403,7 @@ class WristbandAuth:
         logout_path = f"/api/v1/logout?client_id={client_id}{redirect_url}{state}"
 
         # make response to return to client
-        res = RedirectResponse(url=req.url, status_code=302)
+        res = RedirectResponse(url=request.url, status_code=302)
         res.headers["Cache-Control"] = "no-store"
         res.headers["Pragma"] = "no-cache"
 
@@ -413,9 +414,9 @@ class WristbandAuth:
             return res
 
         # 2) If the LogoutConfig has a tenant domain defined, then use that.
-        if config.tenant_domain_name and config.tenant_domain_name.strip():
+        if config.tenant_name and config.tenant_name.strip():
             res.headers["Location"] = (
-                f"https://{config.tenant_domain_name}{separator}{wristband_application_vanity_domain}{logout_path}"
+                f"https://{config.tenant_name}{separator}{wristband_application_vanity_domain}{logout_path}"
             )
             return res
 
@@ -426,9 +427,9 @@ class WristbandAuth:
 
         # 4a) If tenant subdomains are enabled, get the tenant domain from the host.
         # 4b) Otherwise, if tenant subdomains are not enabled, then look for it in the tenant_domain query param.
-        if tenant_domain_name and tenant_domain_name.strip():
+        if tenant_name and tenant_name.strip():
             res.headers["Location"] = (
-                f"https://{tenant_domain_name}{separator}{wristband_application_vanity_domain}{logout_path}"
+                f"https://{tenant_name}{separator}{wristband_application_vanity_domain}{logout_path}"
             )
             return res
 
@@ -470,7 +471,7 @@ class WristbandAuth:
         # Try up to 3 times to perform a token refresh
         for attempt in range(self._token_refresh_retries + 1):
             try:
-                token_response: TokenResponse = await self._wristband_api.refresh_token(refresh_token)
+                token_response: WristbandTokenResponse = await self._wristband_api.refresh_token(refresh_token)
 
                 # Calculate token expiration buffer
                 expires_in = token_response.expires_in - token_expiration_buffer
@@ -513,6 +514,49 @@ class WristbandAuth:
         raise WristbandError("unexpected_error", "Unexpected Error")
 
     #################################
+    #  SESSION AUTH DEPENDENCY
+    #################################
+
+    def create_session_auth_dependency(self) -> Callable[[Request, Response], Awaitable[None]]:
+        """
+        Creates a session authentication dependency for this WristbandAuth instance.
+
+        Returns:
+            An async dependency function for FastAPI route protection.
+        """
+
+        async def require_session_auth(request: Request, response: Response) -> None:
+            """Session authentication dependency for routes."""
+            _logger.debug(f"Executing session auth for: {request.method} {request.url.path}...")
+
+            if not hasattr(request.state, "session"):
+                raise RuntimeError("Session manager not found. Ensure SessionMiddleware is registered in your app.")
+
+            if not request.state.session.is_authenticated:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+            if not is_csrf_token_valid(request):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+            try:
+                refresh_token = request.state.session.refresh_token
+                expires_at = request.state.session.expires_at
+                new_token_data: Optional[TokenData] = await self.refresh_token_if_expired(refresh_token, expires_at)
+                if new_token_data:
+                    request.state.session.access_token = new_token_data.access_token
+                    request.state.session.refresh_token = new_token_data.refresh_token
+                    request.state.session.expires_at = new_token_data.expires_at
+
+                # Always update the cookies for rolling sessions
+                request.state.session.save()
+
+            except Exception as e:
+                _logger.exception(f"Session auth error during token refresh: {str(e)}")
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+        return require_session_auth
+
+    #################################
     #  HELPER METHODS
     #################################
 
@@ -524,9 +568,9 @@ class WristbandAuth:
 
         return tenant_custom_domain_param[0] if tenant_custom_domain_param else ""
 
-    def _resolve_tenant_domain_name(self, req: Request, parse_tenant_from_root_domain: Optional[str]) -> str:
+    def _resolve_tenant_name(self, request: Request, parse_tenant_from_root_domain: Optional[str]) -> str:
         if parse_tenant_from_root_domain and parse_tenant_from_root_domain.strip():
-            host = str(req.url.netloc)
+            host = str(request.url.netloc)
 
             if not host.endswith(parse_tenant_from_root_domain):
                 return ""
@@ -534,7 +578,7 @@ class WristbandAuth:
             subdomain: str = host[: -len(parse_tenant_from_root_domain)].rstrip(".")
             return subdomain or ""
 
-        tenant_domain_param_list = req.query_params.getlist("tenant_domain")
+        tenant_domain_param_list = request.query_params.getlist("tenant_domain")
         if len(tenant_domain_param_list) > 1:
             raise TypeError("More than one [tenant_domain] query parameter was encountered")
 
@@ -588,9 +632,9 @@ class WristbandAuth:
         return random_string.rstrip("=")[:length]
 
     def _clear_oldest_login_state_cookie(
-        self, req: Request, res: Response, dangerously_disable_secure_cookies: bool
+        self, request: Request, res: Response, dangerously_disable_secure_cookies: bool
     ) -> None:
-        cookies = req.cookies
+        cookies = request.cookies
         login_cookie_names = [name for name in cookies if name.startswith(self._cookie_prefix)]
 
         if len(login_cookie_names) >= 3:
@@ -638,8 +682,8 @@ class WristbandAuth:
         digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
         return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
-    def _get_oauth_authorize_url(self, req: Request, config: OAuthAuthorizeUrlConfig) -> str:
-        login_hint_list = req.query_params.getlist("login_hint")
+    def _get_oauth_authorize_url(self, request: Request, config: OAuthAuthorizeUrlConfig) -> str:
+        login_hint_list = request.query_params.getlist("login_hint")
         if len(login_hint_list) > 1:
             raise TypeError("More than one [login_hint] query parameter was encountered")
 
@@ -669,9 +713,9 @@ class WristbandAuth:
         # 4)  defaultTenantDomainName login config
         if config.tenant_custom_domain:
             return f"https://{config.tenant_custom_domain}{path_and_query}"
-        if config.tenant_domain_name:
+        if config.tenant_name:
             return (
-                f"https://{config.tenant_domain_name}"
+                f"https://{config.tenant_name}"
                 f"{separator}{config.wristband_application_vanity_domain}"
                 f"{path_and_query}"
             )
@@ -680,20 +724,20 @@ class WristbandAuth:
 
         # By this point, we know the tenant domain name has already resolved properly, so just return the default.
         return (
-            f"https://{config.default_tenant_domain_name}"
+            f"https://{config.default_tenant_name}"
             f"{separator}{config.wristband_application_vanity_domain}"
             f"{path_and_query}"
         )
 
-    def _assert_single_param(self, req: Request, param: str) -> Optional[str]:
-        values = req.query_params.getlist(param)
+    def _assert_single_param(self, request: Request, param: str) -> Optional[str]:
+        values = request.query_params.getlist(param)
         if len(values) > 1:
             raise TypeError(f"Duplicate query parameter [{param}] passed from Wristband during callback")
         return values[0] if values else None
 
-    def _get_login_state_cookie(self, req: Request) -> Tuple[Optional[str], Optional[str]]:
-        cookies: dict[str, str] = req.cookies
-        state: Optional[str] = req.query_params.get("state")
+    def _get_login_state_cookie(self, request: Request) -> Tuple[Optional[str], Optional[str]]:
+        cookies: dict[str, str] = request.cookies
+        state: Optional[str] = request.query_params.get("state")
         param_state: str = state if state else ""
 
         matching_login_cookie_names: list[str] = [

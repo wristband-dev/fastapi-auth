@@ -5,7 +5,13 @@ import pytest
 from tests.utilities import TEST_LOGIN_STATE_SECRET, create_mock_request
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.exceptions import InvalidGrantError, WristbandError
-from wristband.fastapi_auth.models import AuthConfig, CallbackResultType, LoginState, TokenResponse, UserInfo
+from wristband.fastapi_auth.models import (
+    AuthConfig,
+    CallbackResultType,
+    LoginState,
+    UserInfo,
+    WristbandTokenResponse,
+)
 
 
 class TestWristbandAuthCallback:
@@ -351,7 +357,7 @@ class TestWristbandAuthCallback:
         )
 
         # Mock token response
-        mock_token_response = TokenResponse(
+        mock_token_response = WristbandTokenResponse(
             access_token="access_token_123",
             id_token="id_token_123",
             expires_in=3600,
@@ -360,8 +366,14 @@ class TestWristbandAuthCallback:
             scope="openid offline_access email",
         )
 
-        # Mock user info
-        mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
+        mock_user_info = UserInfo(
+            user_id="user_123",
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+            email="user@example.com",
+            email_verified=True,
+        )
 
         with (
             patch.object(
@@ -390,7 +402,7 @@ class TestWristbandAuthCallback:
         assert callback_data.id_token == "id_token_123"
         assert callback_data.expires_in == 3540  # 3600 - 60 (buffer)
         assert callback_data.expires_at == int((1640995200.0 + 3540) * 1000)
-        assert callback_data.tenant_domain_name == "tenant1"
+        assert callback_data.tenant_name == "tenant1"
         assert callback_data.user_info == mock_user_info
         assert callback_data.custom_state == {"user": "123"}
         assert callback_data.refresh_token == "refresh_token_123"
@@ -421,7 +433,7 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        mock_token_response = TokenResponse(
+        mock_token_response = WristbandTokenResponse(
             access_token="access_token_123",
             id_token="id_token_123",
             expires_in=3600,
@@ -430,7 +442,14 @@ class TestWristbandAuthCallback:
             scope="openid offline_access email",
         )
 
-        mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
+        mock_user_info = UserInfo(
+            user_id="user_123",
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+            email="user@example.com",
+            email_verified=True,
+        )
 
         with (
             patch.object(
@@ -482,7 +501,7 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        mock_token_response = TokenResponse(
+        mock_token_response = WristbandTokenResponse(
             access_token="access_token_123",
             id_token="id_token_123",
             expires_in=3600,
@@ -491,7 +510,14 @@ class TestWristbandAuthCallback:
             scope="openid offline_access email",
         )
 
-        mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
+        mock_user_info = UserInfo(
+            user_id="user_123",
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+            email="user@example.com",
+            email_verified=True,
+        )
 
         with (
             patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
@@ -647,7 +673,7 @@ class TestWristbandAuthCallback:
             host="tenant1.auth.example.com",
         )
 
-        mock_token_response = TokenResponse(
+        mock_token_response = WristbandTokenResponse(
             access_token="access_token_123",
             id_token="id_token_123",
             expires_in=3600,
@@ -656,7 +682,14 @@ class TestWristbandAuthCallback:
             scope="openid offline_access email",
         )
 
-        mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
+        mock_user_info = UserInfo(
+            user_id="user_123",
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+            email="user@example.com",
+            email_verified=True,
+        )
 
         with (
             patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
@@ -675,7 +708,7 @@ class TestWristbandAuthCallback:
 
         assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data is not None
-        assert result.callback_data.tenant_domain_name == "tenant1"
+        assert result.callback_data.tenant_name == "tenant1"
 
     @pytest.mark.asyncio
     async def test_callback_builds_tenant_login_url_with_custom_domain(self) -> None:
@@ -775,7 +808,7 @@ class TestWristbandAuthCallback:
             cookies=cookies,
         )
 
-        mock_token_response = TokenResponse(
+        mock_token_response = WristbandTokenResponse(
             access_token="access_token_123",
             id_token="id_token_123",
             expires_in=3600,
@@ -784,7 +817,14 @@ class TestWristbandAuthCallback:
             scope="openid offline_access email",
         )
 
-        mock_user_info = UserInfo(sub="user_123", email="user@example.com", email_verified=True, username="testuser")
+        mock_user_info = UserInfo(
+            user_id="user_123",
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+            email="user@example.com",
+            email_verified=True,
+        )
 
         with (
             patch.object(wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock) as mock_login_url,
