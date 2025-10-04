@@ -27,10 +27,12 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_returns_correct_data(self, session: Session) -> None:
         """Test that get_token_response returns correct access token and expiration"""
-        session._load_from_dict({
-            "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test_token",
-            "expires_at": 1735689600000,
-        })
+        session._load_from_dict(
+            {
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test_token",
+                "expires_at": 1735689600000,
+            }
+        )
 
         result = session.get_token_response()
 
@@ -40,10 +42,12 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_serialization_format(self, session: Session) -> None:
         """Test that the response serializes with correct field names (camelCase)"""
-        session._load_from_dict({
-            "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test_token",
-            "expires_at": 1735689600000,
-        })
+        session._load_from_dict(
+            {
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test_token",
+                "expires_at": 1735689600000,
+            }
+        )
 
         result = session.get_token_response()
 
@@ -56,13 +60,15 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_does_not_include_other_session_fields(self, session: Session) -> None:
         """Test that TokenResponse only includes access_token and expires_at"""
-        session._load_from_dict({
-            "access_token": "token",
-            "expires_at": 1735689600000,
-            "user_id": "user_123",
-            "tenant_id": "tenant_456",
-            "csrf_token": "csrf_abc",
-        })
+        session._load_from_dict(
+            {
+                "access_token": "token",
+                "expires_at": 1735689600000,
+                "user_id": "user_123",
+                "tenant_id": "tenant_456",
+                "csrf_token": "csrf_abc",
+            }
+        )
 
         result = session.get_token_response()
 
@@ -72,10 +78,12 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_with_empty_access_token(self, session: Session) -> None:
         """Test behavior when session has empty access token - should raise 401"""
-        session._load_from_dict({
-            "access_token": "",
-            "expires_at": 1735689600000,
-        })
+        session._load_from_dict(
+            {
+                "access_token": "",
+                "expires_at": 1735689600000,
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_token_response()
@@ -84,9 +92,11 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_with_missing_access_token(self, session: Session) -> None:
         """Test behavior when session has missing access_token - should raise 401"""
-        session._load_from_dict({
-            "expires_at": 1735689600000,
-        })
+        session._load_from_dict(
+            {
+                "expires_at": 1735689600000,
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_token_response()
@@ -95,9 +105,11 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_with_missing_expires_at(self, session: Session) -> None:
         """Test behavior when session has missing expires_at - should raise 401"""
-        session._load_from_dict({
-            "access_token": "valid_token",
-        })
+        session._load_from_dict(
+            {
+                "access_token": "valid_token",
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_token_response()
@@ -106,10 +118,12 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_with_zero_expires_at(self, session: Session) -> None:
         """Test behavior when session has zero expires_at - should raise 401"""
-        session._load_from_dict({
-            "access_token": "valid_token",
-            "expires_at": 0,
-        })
+        session._load_from_dict(
+            {
+                "access_token": "valid_token",
+                "expires_at": 0,
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_token_response()
@@ -118,10 +132,12 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_with_expired_token(self, session: Session) -> None:
         """Test that get_token_response returns data even if token is expired"""
-        session._load_from_dict({
-            "access_token": "expired_token",
-            "expires_at": 1000000000000,  # Past timestamp
-        })
+        session._load_from_dict(
+            {
+                "access_token": "expired_token",
+                "expires_at": 1000000000000,  # Past timestamp
+            }
+        )
 
         # get_token_response doesn't validate expiration, just returns data
         result = session.get_token_response()
@@ -133,10 +149,12 @@ class TestSessionGetTokenResponse:
         """Test that expires_at is returned exactly as stored in session"""
         specific_expiration = 1735689654321
 
-        session._load_from_dict({
-            "access_token": "token_123",
-            "expires_at": specific_expiration,
-        })
+        session._load_from_dict(
+            {
+                "access_token": "token_123",
+                "expires_at": specific_expiration,
+            }
+        )
 
         result = session.get_token_response()
 
@@ -145,10 +163,12 @@ class TestSessionGetTokenResponse:
 
     def test_get_token_response_type_safety(self, session: Session) -> None:
         """Test that return type is TokenResponse with correct types"""
-        session._load_from_dict({
-            "access_token": "token",
-            "expires_at": 1735689600000,
-        })
+        session._load_from_dict(
+            {
+                "access_token": "token",
+                "expires_at": 1735689600000,
+            }
+        )
 
         result = session.get_token_response()
 
@@ -165,10 +185,12 @@ class TestSessionGetTokenResponse:
             "aqzpqh4Qktb3rk-BuQy72IFLOqV0G_zS245-kronKb78cPN25DGlcTwLtjPAYuNzVBAh4vGHSrQyHUdBBPM"
         )
 
-        session._load_from_dict({
-            "access_token": long_jwt,
-            "expires_at": 1735689600000,
-        })
+        session._load_from_dict(
+            {
+                "access_token": long_jwt,
+                "expires_at": 1735689600000,
+            }
+        )
 
         result = session.get_token_response()
 

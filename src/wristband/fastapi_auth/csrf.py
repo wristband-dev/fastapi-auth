@@ -1,9 +1,10 @@
+import logging
 import secrets
 from typing import Literal, Optional
 
 from fastapi import Request, Response
 
-__all__ = ["create_csrf_token", "update_csrf_cookie", "is_csrf_token_valid", "delete_csrf_cookie"]
+_logger: logging.Logger = logging.getLogger(__name__)
 
 DEFAULT_CSRF_COOKIE_NAME = "CSRF-TOKEN"
 DEFAULT_CSRF_HEADER_NAME = "X-CSRF-TOKEN"
@@ -66,29 +67,40 @@ def update_csrf_cookie(
     )
 
 
-def is_csrf_token_valid(request: Request, header_name: str = DEFAULT_CSRF_HEADER_NAME) -> bool:
+def is_csrf_token_valid(request: Request, csrf_header_name: str) -> bool:
     """
     Check if CSRF token from request header matches session token.
 
     Args:
         request: FastAPI Request object
-        header_name: Header name to check for CSRF token (default: "X-CSRF-TOKEN")
+        header_name: Header name to check for CSRF token
 
     Returns:
         True if CSRF tokens match, False otherwise
     """
     if not request:
         raise ValueError("request cannot be None")
+    if not csrf_header_name:
+        raise ValueError("csrf_header_name cannot be None")
 
     try:
         # Check both tokens exist and match
         session_csrf = request.state.session.csrf_token
-        header_csrf = request.headers.get(header_name)
+        header_csrf = request.headers.get(csrf_header_name)
 
         if not session_csrf or not header_csrf:
+            _logger.debug(
+                f"CSRF validation failed - missing token. "
+                f"Session token present: {session_csrf is not None}, "
+                f"{csrf_header_name} Header token present: {header_csrf is not None}"
+            )
             return False
 
-        return str(session_csrf) == str(header_csrf)
+        tokens_match = str(session_csrf) == str(header_csrf)
+        if not tokens_match:
+            _logger.debug(f"CSRF validation failed - tokens do not match. Header: {csrf_header_name}")
+
+        return tokens_match
     except Exception:
         return False
 

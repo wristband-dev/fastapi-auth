@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from fastapi import Request, Response
 
@@ -46,6 +48,12 @@ def test_create_csrf_token_generates_hex():
     int(token, 16)  # Valid hex
 
 
+def test_create_csrf_token_uniqueness():
+    """Test that multiple tokens are unique"""
+    tokens = [create_csrf_token() for _ in range(100)]
+    assert len(set(tokens)) == 100  # All unique
+
+
 def test_update_csrf_cookie_sets_cookie_and_fields():
     response = Response()
     token = "testtoken"
@@ -73,8 +81,14 @@ def test_update_csrf_cookie_sets_cookie_and_fields():
 
 def test_update_csrf_cookie_raises_for_empty_token():
     response = Response()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="csrf_token cannot be None or empty"):
         update_csrf_cookie(response=response, csrf_token="")
+
+
+def test_update_csrf_cookie_raises_for_none_token():
+    response = Response()
+    with pytest.raises(ValueError, match="csrf_token cannot be None or empty"):
+        update_csrf_cookie(response=response, csrf_token=None)  # type: ignore
 
 
 @pytest.mark.parametrize("same_site", ["lax", "strict", "none"])
@@ -100,30 +114,83 @@ def test_is_csrf_token_valid_success():
     token = "validtoken"
     headers = {DEFAULT_CSRF_HEADER_NAME: token}
     request = make_request(headers=headers, csrf_token=token)
-    assert is_csrf_token_valid(request) is True
+
+    with patch("wristband.fastapi_auth.csrf._logger") as mock_logger:
+        assert is_csrf_token_valid(request, DEFAULT_CSRF_HEADER_NAME) is True
+        mock_logger.debug.assert_not_called()
+
+
+def test_is_csrf_token_valid_custom_header_name():
+    """Test validation with a custom header name"""
+    token = "validtoken"
+    custom_header = "X-Custom-CSRF"
+    headers = {custom_header: token}
+    request = make_request(headers=headers, csrf_token=token)
+    assert is_csrf_token_valid(request, custom_header) is True
+
+
+def test_is_csrf_token_valid_wrong_header_name():
+    """Test that validation fails when using wrong header name"""
+    token = "validtoken"
+    headers = {"X-Wrong-Header": token}
+    request = make_request(headers=headers, csrf_token=token)
+    assert is_csrf_token_valid(request, DEFAULT_CSRF_HEADER_NAME) is False
 
 
 def test_is_csrf_token_valid_mismatch():
     headers = {DEFAULT_CSRF_HEADER_NAME: "wrong"}
     request = make_request(headers=headers, csrf_token="expected")
-    assert is_csrf_token_valid(request) is False
+
+    with patch("wristband.fastapi_auth.csrf._logger") as mock_logger:
+        assert is_csrf_token_valid(request, DEFAULT_CSRF_HEADER_NAME) is False
+
+        mock_logger.debug.assert_called_once()
+        log_message = mock_logger.debug.call_args[0][0]
+        assert "CSRF validation failed - tokens do not match" in log_message
 
 
 def test_is_csrf_token_valid_missing_header():
     request = make_request(csrf_token="sometoken")
-    assert is_csrf_token_valid(request) is False
+
+    with patch("wristband.fastapi_auth.csrf._logger") as mock_logger:
+        assert is_csrf_token_valid(request, DEFAULT_CSRF_HEADER_NAME) is False
+
+        mock_logger.debug.assert_called_once()
+        log_message = mock_logger.debug.call_args[0][0]
+        assert "CSRF validation failed - missing token" in log_message
+        assert f"{DEFAULT_CSRF_HEADER_NAME} Header token present: False" in log_message
 
 
 def test_is_csrf_token_valid_missing_session_token():
     headers = {DEFAULT_CSRF_HEADER_NAME: "header_token"}
     request = make_request(headers=headers, csrf_token=None)
-    assert is_csrf_token_valid(request) is False
+
+    with patch("wristband.fastapi_auth.csrf._logger") as mock_logger:
+        assert is_csrf_token_valid(request, DEFAULT_CSRF_HEADER_NAME) is False
+
+        mock_logger.debug.assert_called_once()
+        log_message = mock_logger.debug.call_args[0][0]
+        assert "CSRF validation failed - missing token" in log_message
+        assert "Session token present: False" in log_message
+        assert f"{DEFAULT_CSRF_HEADER_NAME} Header token present: True" in log_message
 
 
 def test_is_csrf_token_valid_exception_handling():
     headers = {DEFAULT_CSRF_HEADER_NAME: "header_token"}
     request = make_request(headers=headers, raise_error=True)
-    assert is_csrf_token_valid(request) is False
+
+    with patch("wristband.fastapi_auth.csrf._logger") as mock_logger:
+        assert is_csrf_token_valid(request, DEFAULT_CSRF_HEADER_NAME) is False
+        mock_logger.debug.assert_not_called()
+
+
+def test_is_csrf_token_valid_case_sensitive_header():
+    """Test that header names are case-insensitive (FastAPI normalizes)"""
+    token = "validtoken"
+    headers = {"x-csrf-token": token}  # lowercase
+    request = make_request(headers=headers, csrf_token=token)
+    # FastAPI normalizes headers, so this should work
+    assert is_csrf_token_valid(request, "X-CSRF-TOKEN") is True
 
 
 def test_delete_csrf_cookie_sets_empty_cookie_and_fields():
@@ -158,7 +225,21 @@ def test_update_csrf_cookie_raises_when_response_none():
 
 def test_is_csrf_token_valid_raises_when_request_none():
     with pytest.raises(ValueError, match="request cannot be None"):
-        is_csrf_token_valid(request=None)  # type: ignore
+        is_csrf_token_valid(request=None, csrf_header_name=DEFAULT_CSRF_HEADER_NAME)  # type: ignore
+
+
+def test_is_csrf_token_valid_raises_when_header_name_none():
+    """Test that validation raises when csrf_header_name is None"""
+    request = make_request(csrf_token="token")
+    with pytest.raises(ValueError, match="csrf_header_name cannot be None"):
+        is_csrf_token_valid(request, csrf_header_name=None)  # type: ignore
+
+
+def test_is_csrf_token_valid_raises_when_header_name_empty():
+    """Test that validation raises when csrf_header_name is empty string"""
+    request = make_request(csrf_token="token")
+    with pytest.raises(ValueError, match="csrf_header_name cannot be None"):
+        is_csrf_token_valid(request, csrf_header_name="")
 
 
 def test_delete_csrf_cookie_raises_when_response_none():

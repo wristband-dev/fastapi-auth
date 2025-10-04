@@ -27,10 +27,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_no_metadata(self, session: Session) -> None:
         """Test getting session response without metadata"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "user_123",
+            }
+        )
 
         result = session.get_session_response()
 
@@ -41,10 +43,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_metadata(self, session: Session) -> None:
         """Test getting session response with custom metadata"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "user_123",
+            }
+        )
 
         custom_metadata = {
             "role": "admin",
@@ -64,10 +68,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_empty_metadata_dict(self, session: Session) -> None:
         """Test getting session response with explicitly empty metadata dict"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "user_123",
+            }
+        )
 
         result = session.get_session_response(metadata={})
 
@@ -76,10 +82,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_serialization_format(self, session: Session) -> None:
         """Test that the response serializes with correct field names"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "user_123",
+            }
+        )
 
         metadata = {"custom_field": "value"}
         result = session.get_session_response(metadata=metadata)
@@ -95,10 +103,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_different_session_data(self, session: Session) -> None:
         """Test with different session data values"""
-        session._load_from_dict({
-            "tenant_id": "different_tenant",
-            "user_id": "different_user",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "different_tenant",
+                "user_id": "different_user",
+            }
+        )
 
         result = session.get_session_response()
 
@@ -107,10 +117,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_complex_metadata(self, session: Session) -> None:
         """Test with complex nested metadata structure"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "user_123",
+            }
+        )
 
         complex_metadata = {
             "user_settings": {
@@ -140,10 +152,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_none_metadata_defaults_to_empty_dict(self, session: Session) -> None:
         """Test that None metadata defaults to empty dict"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "user_123",
+            }
+        )
 
         result = session.get_session_response(metadata=None)
 
@@ -152,9 +166,11 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_missing_tenant_id(self, session: Session) -> None:
         """Test that HTTPException is raised when tenant_id is missing"""
-        session._load_from_dict({
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "user_id": "user_123",
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_session_response()
@@ -163,9 +179,11 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_missing_user_id(self, session: Session) -> None:
         """Test that HTTPException is raised when user_id is missing"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_session_response()
@@ -174,10 +192,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_empty_tenant_id(self, session: Session) -> None:
         """Test that HTTPException is raised when tenant_id is empty string"""
-        session._load_from_dict({
-            "tenant_id": "",
-            "user_id": "user_123",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "",
+                "user_id": "user_123",
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_session_response()
@@ -186,10 +206,12 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_with_empty_user_id(self, session: Session) -> None:
         """Test that HTTPException is raised when user_id is empty string"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "",
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "",
+            }
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             session.get_session_response()
@@ -198,13 +220,15 @@ class TestSessionGetSessionResponse:
 
     def test_get_session_response_does_not_include_other_session_fields(self, session: Session) -> None:
         """Test that SessionResponse only includes tenant_id, user_id, and metadata"""
-        session._load_from_dict({
-            "tenant_id": "tenant_456",
-            "user_id": "user_123",
-            "access_token": "secret_token",
-            "csrf_token": "csrf_abc",
-            "expires_at": 1735689600000,
-        })
+        session._load_from_dict(
+            {
+                "tenant_id": "tenant_456",
+                "user_id": "user_123",
+                "access_token": "secret_token",
+                "csrf_token": "csrf_abc",
+                "expires_at": 1735689600000,
+            }
+        )
 
         result = session.get_session_response()
 

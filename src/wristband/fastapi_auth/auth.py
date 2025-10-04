@@ -517,9 +517,14 @@ class WristbandAuth:
     #  SESSION AUTH DEPENDENCY
     #################################
 
-    def create_session_auth_dependency(self) -> Callable[[Request, Response], Awaitable[None]]:
+    def create_session_auth_dependency(
+        self, csrf_header_name: str = "X-CSRF-TOKEN"
+    ) -> Callable[[Request, Response], Awaitable[None]]:
         """
         Creates a session authentication dependency for this WristbandAuth instance.
+
+        Args:
+            csrf_header_name: The HTTP header name to read the CSRF token from (default: "X-CSRF-TOKEN")
 
         Returns:
             An async dependency function for FastAPI route protection.
@@ -535,7 +540,7 @@ class WristbandAuth:
             if not request.state.session.is_authenticated:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-            if not is_csrf_token_valid(request):
+            if not is_csrf_token_valid(request, csrf_header_name):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
             try:

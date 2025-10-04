@@ -66,9 +66,7 @@ class TestWristbandAuthLogout:
         request = create_mock_request(
             "/logout", query_params={"tenant_domain": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
         )
-        logout_config = LogoutConfig(
-            tenant_name="config-tenant", redirect_url="https://app.example.com/logged-out"
-        )
+        logout_config = LogoutConfig(tenant_name="config-tenant", redirect_url="https://app.example.com/logged-out")
 
         with (
             patch.object(

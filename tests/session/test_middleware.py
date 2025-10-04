@@ -1,6 +1,7 @@
+from unittest.mock import Mock
+
 import pytest
 from fastapi import Request, Response
-from unittest.mock import Mock
 
 from wristband.fastapi_auth import CallbackData, SessionMiddleware, UserInfo
 from wristband.fastapi_auth.session import Session
