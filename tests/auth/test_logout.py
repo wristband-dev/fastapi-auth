@@ -30,7 +30,7 @@ class TestWristbandAuthLogout:
         )
         logout_config = LogoutConfig(
             tenant_custom_domain="config.custom.com",
-            tenant_domain_name="config-tenant",
+            tenant_name="config-tenant",
             redirect_url="https://app.example.com/logged-out",
         )
 
@@ -66,9 +66,7 @@ class TestWristbandAuthLogout:
         request = create_mock_request(
             "/logout", query_params={"tenant_domain": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
         )
-        logout_config = LogoutConfig(
-            tenant_domain_name="config-tenant", redirect_url="https://app.example.com/logged-out"
-        )
+        logout_config = LogoutConfig(tenant_name="config-tenant", redirect_url="https://app.example.com/logged-out")
 
         with (
             patch.object(
@@ -688,7 +686,7 @@ class TestWristbandAuthLogout:
         request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
         logout_config = LogoutConfig(
             tenant_custom_domain="",  # Empty string should be ignored
-            tenant_domain_name="   ",  # Whitespace only should be ignored
+            tenant_name="   ",  # Whitespace only should be ignored
         )
 
         with (
@@ -722,7 +720,7 @@ class TestWristbandAuthLogout:
             state="combined_test_state",
             redirect_url="https://app.example.com/complete-logout",
             refresh_token="test_refresh_token",
-            tenant_domain_name="config-tenant",  # Should take precedence over query param
+            tenant_name="config-tenant",  # Should take precedence over query param
         )
 
         with (

@@ -3,7 +3,8 @@ import base64
 import httpx
 
 from .exceptions import InvalidGrantError, WristbandError
-from .models import SdkConfiguration, TokenResponse, UserInfo
+from .models import RawUserInfo, SdkConfiguration, UserInfo, WristbandTokenResponse
+from .utils import map_userinfo_claims
 
 
 class WristbandApiClient:
@@ -53,7 +54,7 @@ class WristbandApiClient:
         except Exception as e:
             raise WristbandError("unexpected_error", str(e))
 
-    async def get_tokens(self, code: str, redirect_uri: str, code_verifier: str) -> TokenResponse:
+    async def get_tokens(self, code: str, redirect_uri: str, code_verifier: str) -> WristbandTokenResponse:
         if not code or not code.strip():
             raise ValueError("Authorization code is required")
         if not redirect_uri or not redirect_uri.strip():
@@ -79,7 +80,7 @@ class WristbandApiClient:
 
             raise WristbandError(data.get("error", "unknown_error"), data.get("error_description", "Unknown error"))
 
-        return TokenResponse.from_api_response(response.json())
+        return WristbandTokenResponse.from_api_response(response.json())
 
     async def get_userinfo(self, access_token: str) -> UserInfo:
         try:
@@ -87,12 +88,13 @@ class WristbandApiClient:
                 self._base_url + "/oauth2/userinfo", headers={"Authorization": f"Bearer {access_token}"}
             )
             response.raise_for_status()
-            userinfo: UserInfo = response.json()
+            raw_userinfo: RawUserInfo = RawUserInfo(**response.json())
+            userinfo: UserInfo = map_userinfo_claims(raw_userinfo)
             return userinfo
         except Exception as e:
             raise WristbandError("unexpected_error", str(e))
 
-    async def refresh_token(self, refresh_token: str) -> TokenResponse:
+    async def refresh_token(self, refresh_token: str) -> WristbandTokenResponse:
         response: httpx.Response = await self.client.post(
             self._base_url + "/oauth2/token",
             headers=self._basic_auth_headers,
@@ -106,7 +108,7 @@ class WristbandApiClient:
 
             raise WristbandError(data.get("error", "unknown_error"), data.get("error_description", "Unknown error"))
 
-        return TokenResponse.from_api_response(response.json())
+        return WristbandTokenResponse.from_api_response(response.json())
 
     async def revoke_refresh_token(self, refresh_token: str) -> None:
         await self.client.post(

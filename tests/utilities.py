@@ -12,13 +12,13 @@ from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 
 from wristband.fastapi_auth.models import LoginState
-from wristband.fastapi_auth.utils import SessionEncryptor
+from wristband.fastapi_auth.utils import DataEncryptor
 
 # Shared test secret
 TEST_LOGIN_STATE_SECRET = "this_is_a_very_long_secret_key_for_testing_purposes_123456789"
 
 # Singleton encryptor instance
-_login_state_encryptor = SessionEncryptor(TEST_LOGIN_STATE_SECRET)
+_login_state_encryptor = DataEncryptor(TEST_LOGIN_STATE_SECRET)
 
 
 def create_mock_request(

@@ -6,7 +6,7 @@ import pytest
 
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.exceptions import InvalidGrantError, WristbandError
-from wristband.fastapi_auth.models import AuthConfig, TokenData, TokenResponse
+from wristband.fastapi_auth.models import AuthConfig, TokenData, WristbandTokenResponse
 
 
 @pytest.fixture
@@ -30,9 +30,9 @@ def wristband_auth(auth_config):
 
 
 @pytest.fixture
-def mock_token_response():
-    """Create a mock token response."""
-    return TokenResponse(
+def mock_wristband_token_response():
+    """Create a mock Wristband token response."""
+    return WristbandTokenResponse(
         access_token="new_access_token",
         id_token="new_id_token",
         token_type="Bearer",
@@ -122,13 +122,15 @@ async def test_refresh_token_if_expired_token_expires_soon_but_not_expired(wrist
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_success(wristband_auth, mock_token_response):
+async def test_refresh_token_if_expired_success(wristband_auth, mock_wristband_token_response):
     """Test successful token refresh."""
     # Set expires_at to past (token expired)
     past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
 
     # Mock the API call
-    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_token_response) as mock_refresh:
+    with patch.object(
+        wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response
+    ) as mock_refresh:
         # Mock time.time() to return a consistent value for calculation
         with patch("time.time", return_value=1000000):
             result = await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
@@ -151,7 +153,7 @@ async def test_refresh_token_if_expired_success(wristband_auth, mock_token_respo
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_success_with_custom_buffer(auth_config, mock_token_response):
+async def test_refresh_token_if_expired_success_with_custom_buffer(auth_config, mock_wristband_token_response):
     """Test successful token refresh with custom expiration buffer."""
     # Set custom buffer
     auth_config.token_expiration_buffer = 120
@@ -160,7 +162,7 @@ async def test_refresh_token_if_expired_success_with_custom_buffer(auth_config, 
     # Use a timestamp that's in the past (Unix epoch)
     past_timestamp = 1000  # Very old timestamp
 
-    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_token_response):
+    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response):
         with patch("time.time", return_value=1000000):
             result = await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
 
@@ -173,7 +175,7 @@ async def test_refresh_token_if_expired_success_with_custom_buffer(auth_config, 
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_success_with_zero_buffer(auth_config, mock_token_response):
+async def test_refresh_token_if_expired_success_with_zero_buffer(auth_config, mock_wristband_token_response):
     """Test successful token refresh with zero expiration buffer."""
     # Set zero buffer
     auth_config.token_expiration_buffer = 0
@@ -182,7 +184,7 @@ async def test_refresh_token_if_expired_success_with_zero_buffer(auth_config, mo
     # Use a timestamp that's definitely in the past (Unix epoch)
     past_timestamp = 1000  # Very old timestamp
 
-    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_token_response):
+    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response):
         with patch("time.time", return_value=1000000):
             result = await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
 
@@ -284,7 +286,7 @@ async def test_refresh_token_if_expired_5xx_error_with_retries(wristband_auth):
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_5xx_error_eventual_success(wristband_auth, mock_token_response):
+async def test_refresh_token_if_expired_5xx_error_eventual_success(wristband_auth, mock_wristband_token_response):
     """Test that 5xx errors are retried and eventually succeed."""
     past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
 
@@ -294,7 +296,9 @@ async def test_refresh_token_if_expired_5xx_error_eventual_success(wristband_aut
     http_error = httpx.HTTPStatusError("500 Internal Server Error", request=Mock(), response=mock_response)
 
     with patch.object(
-        wristband_auth._wristband_api, "refresh_token", side_effect=[http_error, http_error, mock_token_response]
+        wristband_auth._wristband_api,
+        "refresh_token",
+        side_effect=[http_error, http_error, mock_wristband_token_response],
     ) as mock_refresh:
         with patch("time.sleep") as mock_sleep:
             with patch("time.time", return_value=1000000):
@@ -357,12 +361,12 @@ async def test_refresh_token_if_expired_timestamp_boundary(wristband_auth):
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_milliseconds_precision(wristband_auth, mock_token_response):
+async def test_refresh_token_if_expired_milliseconds_precision(wristband_auth, mock_wristband_token_response):
     """Test that millisecond precision is handled correctly."""
     # Set expires_at to 1 millisecond in the past
     past_timestamp = int(datetime.now().timestamp() * 1000) - 1
 
-    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_token_response):
+    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response):
         with patch("time.time", return_value=1000000):
             result = await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
 
@@ -379,11 +383,13 @@ async def test_refresh_token_if_expired_retry_configuration(wristband_auth):
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_concurrent_calls(wristband_auth, mock_token_response):
+async def test_refresh_token_if_expired_concurrent_calls(wristband_auth, mock_wristband_token_response):
     """Test behavior with concurrent refresh attempts."""
     past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
 
-    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_token_response) as mock_refresh:
+    with patch.object(
+        wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response
+    ) as mock_refresh:
         with patch("time.time", return_value=1000000):
             # Simulate concurrent calls
             import asyncio
@@ -405,11 +411,11 @@ async def test_refresh_token_if_expired_concurrent_calls(wristband_auth, mock_to
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_token_data_structure(wristband_auth, mock_token_response):
+async def test_refresh_token_if_expired_token_data_structure(wristband_auth, mock_wristband_token_response):
     """Test that returned TokenData has correct structure and values."""
     past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
 
-    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_token_response):
+    with patch.object(wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response):
         with patch("time.time", return_value=1000000):
             result = await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
 
@@ -427,6 +433,6 @@ async def test_refresh_token_if_expired_token_data_structure(wristband_auth, moc
     assert isinstance(result.refresh_token, str)
 
     # Verify values match expected calculations
-    assert result.access_token == mock_token_response.access_token
-    assert result.id_token == mock_token_response.id_token
-    assert result.refresh_token == mock_token_response.refresh_token
+    assert result.access_token == mock_wristband_token_response.access_token
+    assert result.id_token == mock_wristband_token_response.id_token
+    assert result.refresh_token == mock_wristband_token_response.refresh_token
