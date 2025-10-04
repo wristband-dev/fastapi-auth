@@ -413,7 +413,7 @@ const userResponse = await fetch('https://your-app.wristband.dev/api/v1/users/me
 The SDK provides `create_session_auth_dependency()` which returns a reusable FastAPI Dependency that:
 
 - Validates the user's authenticated session
-- Checks CSRF tokens to prevent cross-site request forgery attacks
+- Checks CSRF tokens to prevent [cross-site request forgery](https://docs.wristband.dev/docs/csrf-protection-for-backend-servers) attacks
 - Automatically refreshes expired access tokens
 - Updates session cookies with new token data when refresh occurs
 
@@ -1477,7 +1477,7 @@ When you create a session using `from_callback()`, the SDK automatically generat
 1. **Session cookie** (encrypted, HttpOnly): Contains the CSRF token as part of the encrypted session data
 2. **CSRF cookie** (unencrypted, readable by JavaScript): Contains the same CSRF token in plaintext
 
-This dual-cookie approach follows the Synchronizer Token Pattern:
+This dual-cookie approach follows the [Synchronizer Token Pattern](https://docs.wristband.dev/docs/csrf-protection-for-backend-servers):
 - The session cookie proves the user is authenticated (server-side validation)
 - The CSRF cookie must be read by your frontend and sent in request headers (client-side participation)
 
