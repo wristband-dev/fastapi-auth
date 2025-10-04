@@ -32,10 +32,41 @@
 
 ## Table of Contents
 
+- [Parameter Name Changes](#parameter-name-changes)
 - [Model Field Name Changes](#model-field-name-changes)
   - [default_tenant_domain_name renamed to default_tenant_name](#default_tenant_domain_name-renamed-to-default_tenant_name)
   - [tenant_domain_name renamed to tenant_name](#tenant_domain_name-renamed-to-tenant_name)
 - [UserInfo Model Changes](#userinfo-model-changes)
+
+<br>
+
+## `req` parameter renamed to `request`
+
+All `WristbandAuth` methods now use `request` instead of `req` for the FastAPI request parameter.
+
+```python
+# Login endpoint
+@router.get('/api/auth/login')
+async def login(request: Request) -> Response:
+-   return await wristband_auth.login(req=request)
++   return await wristband_auth.login(request=request)
+
+# Callback endpoint
+@router.get('/api/auth/callback')
+async def callback(request: Request) -> Response:
+-   callback_result = await wristband_auth.callback(req=request)
++   callback_result = await wristband_auth.callback(request=request)
+
+url = "https://yourapp.io"
+-   response = await wristband_auth.create_callback_response(req=request, redirect_url=url)
++   response = await wristband_auth.create_callback_response(request=request, redirect_url=url)
+
+# Logout endpoint
+@router.get('/api/auth/logout')
+async def logout(request: Request) -> Response:
+-     response = await wristband_auth.logout(req=request, config=LogoutConfig(...))
++     response = await wristband_auth.logout(request=request, config=LogoutConfig(...))
+```
 
 <br>
 
