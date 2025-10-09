@@ -1,7 +1,7 @@
 import pytest
 
 from wristband.fastapi_auth import CallbackData, UserInfo
-from wristband.fastapi_auth.session import Session
+from wristband.fastapi_auth.session import SessionManager
 from wristband.fastapi_auth.utils import DataEncryptor
 
 
@@ -18,8 +18,8 @@ def encryptor(secret_key):
 
 @pytest.fixture
 def session(encryptor):
-    """Create a Session instance for testing"""
-    return Session(
+    """Create a SessionManager instance for testing"""
+    return SessionManager(
         encryptor=encryptor,
         session_cookie_name="session",
         session_cookie_domain=None,
@@ -259,6 +259,7 @@ class TestSessionFromCallback:
         assert session["user_id"] == "user_123"
         assert session["tenant_id"] == "tenant_123"
         assert session["tenant_name"] == "test-tenant"
+        assert session["identity_provider_name"] == "Wristband"
         assert session["refresh_token"] == "refresh_token_123"
         assert session["tenant_custom_domain"] == "custom.example.com"
         assert "csrf_token" in session
@@ -273,6 +274,7 @@ class TestSessionFromCallback:
         assert session["user_id"] == "user_id"
         assert session["tenant_id"] == "tenant_id"
         assert session["tenant_name"] == "tenant"
+        assert session["identity_provider_name"] == "Wristband"
         # Optional fields should not be in session dict when None
         assert "refresh_token" not in session._data
         assert "tenant_custom_domain" not in session._data
@@ -408,7 +410,11 @@ class TestSessionFromCallback:
         # Core fields should be present
         assert "is_authenticated" in session._data
         assert "access_token" in session._data
+        assert "expires_at" in session._data
         assert "user_id" in session._data
+        assert "tenant_id" in session._data
+        assert "tenant_name" in session._data
+        assert "identity_provider_name" in session._data
         assert "csrf_token" in session._data
 
         # Optional fields should not be present

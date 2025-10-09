@@ -4,7 +4,7 @@ import logging
 import secrets
 import time
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Literal, Optional, Tuple
+from typing import Any, Awaitable, Callable, Literal, Optional, Tuple, cast
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -28,6 +28,7 @@ from .models import (
     UserInfo,
     WristbandTokenResponse,
 )
+from .session import Session
 from .utils import DataEncryptor
 
 _logger: logging.Logger = logging.getLogger(__name__)
@@ -518,8 +519,9 @@ class WristbandAuth:
     #################################
 
     def create_session_auth_dependency(
-        self, csrf_header_name: str = "X-CSRF-TOKEN"
-    ) -> Callable[[Request, Response], Awaitable[None]]:
+        self,
+        csrf_header_name: str = "X-CSRF-TOKEN"
+    ) -> Callable[[Request, Response], Awaitable[Session]]:
         """
         Creates a session authentication dependency for this WristbandAuth instance.
 
@@ -530,12 +532,12 @@ class WristbandAuth:
             An async dependency function for FastAPI route protection.
         """
 
-        async def require_session_auth(request: Request, response: Response) -> None:
+        async def require_session_auth(request: Request, response: Response) -> Session:
             """Session authentication dependency for routes."""
             _logger.debug(f"Executing session auth for: {request.method} {request.url.path}...")
 
             if not hasattr(request.state, "session"):
-                raise RuntimeError("Session manager not found. Ensure SessionMiddleware is registered in your app.")
+                raise RuntimeError("Session not found. Ensure SessionMiddleware is registered in your app.")
 
             if not request.state.session.is_authenticated:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
@@ -554,6 +556,7 @@ class WristbandAuth:
 
                 # Always update the cookies for rolling sessions
                 request.state.session.save()
+                return cast(Session, request.state.session)
 
             except Exception as e:
                 _logger.exception(f"Session auth error during token refresh: {str(e)}")

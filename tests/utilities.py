@@ -11,14 +11,7 @@ from urllib.parse import ParseResult, parse_qs, urlparse
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 
-from wristband.fastapi_auth.models import LoginState
-from wristband.fastapi_auth.utils import DataEncryptor
-
-# Shared test secret
 TEST_LOGIN_STATE_SECRET = "this_is_a_very_long_secret_key_for_testing_purposes_123456789"
-
-# Singleton encryptor instance
-_login_state_encryptor = DataEncryptor(TEST_LOGIN_STATE_SECRET)
 
 
 def create_mock_request(
@@ -227,33 +220,6 @@ def assert_authorize_query_params(
     ), "Missing or empty 'code_challenge'"
 
 
-def encrypt_login_state(login_state: LoginState) -> str:
-    """
-    Encrypt a LoginState object for testing.
-
-    Args:
-        login_state: The LoginState to encrypt
-
-    Returns:
-        Encrypted login state string
-    """
-    return _login_state_encryptor.encrypt(login_state.to_dict())
-
-
-def decrypt_login_state(login_state_cookie: str) -> LoginState:
-    """
-    Decrypt a login state cookie for testing.
-
-    Args:
-        login_state_cookie: Encrypted login state string
-
-    Returns:
-        Decrypted LoginState object
-    """
-    login_state_dict = _login_state_encryptor.decrypt(login_state_cookie)
-    return LoginState(**login_state_dict)
-
-
 def assert_no_login_cookies(response: Response) -> None:
     """
     Assert that response contains no login cookies.
@@ -272,32 +238,3 @@ def assert_no_login_cookies(response: Response) -> None:
             if "login#" in h
         ]
         assert len(login_cookies) == 0, f"Expected 0 login cookies, found {len(login_cookies)}"
-
-
-def create_test_login_state(
-    state: str = "test_state_123",
-    code_verifier: str = "test_code_verifier_123",
-    redirect_uri: str = "https://example.com/callback",
-    return_url: Optional[str] = None,
-    custom_state: Optional[Dict[str, str]] = None,
-) -> LoginState:
-    """
-    Create a LoginState object for testing.
-
-    Args:
-        state: OAuth state parameter
-        code_verifier: PKCE code verifier
-        redirect_uri: OAuth redirect URI
-        return_url: Optional return URL after auth
-        custom_state: Optional custom state data
-
-    Returns:
-        LoginState object with test data
-    """
-    return LoginState(
-        state=state,
-        code_verifier=code_verifier,
-        redirect_uri=redirect_uri,
-        return_url=return_url,
-        custom_state=custom_state,
-    )

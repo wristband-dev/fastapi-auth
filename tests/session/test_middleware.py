@@ -1,10 +1,11 @@
-from unittest.mock import Mock
+from typing import Literal
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import Request, Response
 
 from wristband.fastapi_auth import CallbackData, SessionMiddleware, UserInfo
-from wristband.fastapi_auth.session import Session
+from wristband.fastapi_auth.session import SessionManager
 from wristband.fastapi_auth.utils import DataEncryptor
 
 
@@ -140,8 +141,6 @@ class TestSessionMiddlewareInitialization:
         assert middleware._csrf_cookie_domain == ".csrf.example.com"
 
     def test_init_with_all_same_site_options(self):
-        from typing import Literal
-
         same_site_values: list[Literal["lax", "strict", "none"]] = ["lax", "strict", "none"]
         for same_site in same_site_values:
             middleware = SessionMiddleware(app=Mock(), secret_key="a" * 32, same_site=same_site)
@@ -158,7 +157,7 @@ class TestSessionMiddlewareDispatch:
 
         async def call_next(req):
             assert hasattr(req.state, "session")
-            assert isinstance(req.state.session, Session)
+            assert isinstance(req.state.session, SessionManager)
             return Response()
 
         await middleware.dispatch(request, call_next)
@@ -378,8 +377,6 @@ class TestSessionMiddlewareDispatch:
 
     @pytest.mark.asyncio
     async def test_dispatch_logs_decryption_failure(self, secret_key):
-        from unittest.mock import patch
-
         middleware = SessionMiddleware(app=Mock(), secret_key=secret_key)
         request = Request(
             scope={

@@ -2,7 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from wristband.fastapi_auth import TokenResponse
-from wristband.fastapi_auth.session import Session
+from wristband.fastapi_auth.session import Session, SessionManager
 from wristband.fastapi_auth.utils import DataEncryptor
 
 
@@ -10,10 +10,10 @@ class TestSessionGetTokenResponse:
     """Unit tests for Session.get_token_response()"""
 
     @pytest.fixture
-    def session(self) -> Session:
+    def session(self) -> SessionManager:
         """Create a Session instance for testing"""
         encryptor = DataEncryptor("a" * 32)
-        return Session(
+        return SessionManager(
             encryptor=encryptor,
             session_cookie_name="session",
             session_cookie_domain=None,
