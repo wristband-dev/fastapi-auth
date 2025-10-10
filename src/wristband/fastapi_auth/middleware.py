@@ -1,9 +1,10 @@
 import logging
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Any, Awaitable, Callable, Literal, Optional
 
-from .session import Session
+from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from .session import SessionManager
 from .utils import DataEncryptor
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ class SessionMiddleware(BaseHTTPMiddleware):
         self._secure = secure
 
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-        session = Session(
+        session = SessionManager(
             encryptor=self._encryptor,
             session_cookie_name=self._session_cookie_name,
             session_cookie_domain=self._session_cookie_domain,

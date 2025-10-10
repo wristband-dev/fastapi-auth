@@ -9,7 +9,6 @@ from tests.utilities import (
     assert_redirect_no_cache,
     assert_single_login_cookie_valid,
     create_mock_request,
-    decrypt_login_state,
 )
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.models import AuthConfig, LoginConfig, LoginState, OAuthAuthorizeUrlConfig
@@ -176,7 +175,7 @@ class TestWristbandAuthLogin:
             # Validate login state cookie is set and decrypt to check custom state
             _, cookie_value = assert_single_login_cookie_valid(response)
 
-            login_state = decrypt_login_state(cookie_value)
+            login_state = self.wristband_auth._decrypt_login_state(cookie_value)
             assert login_state.custom_state
             assert login_state.custom_state["user_preference"] == "dark_mode"
 
@@ -221,7 +220,7 @@ class TestWristbandAuthLogin:
             # Validate login state cookie is set and decrypt to check return_url
             _, cookie_value = assert_single_login_cookie_valid(response)
 
-            login_state = decrypt_login_state(cookie_value)
+            login_state = self.wristband_auth._decrypt_login_state(cookie_value)
             # LoginConfig return_url should take precedence over query param
             assert login_state.return_url == config_return_url
 
@@ -266,7 +265,7 @@ class TestWristbandAuthLogin:
             # Validate login state cookie is set and decrypt to check return_url
             _, cookie_value = assert_single_login_cookie_valid(response)
 
-            login_state = decrypt_login_state(cookie_value)
+            login_state = self.wristband_auth._decrypt_login_state(cookie_value)
             # Should fall back to query param value
             assert login_state.return_url == query_return_url
 
@@ -308,7 +307,7 @@ class TestWristbandAuthLogin:
             # Validate login state cookie is set and decrypt to check return_url
             _, cookie_value = assert_single_login_cookie_valid(response)
 
-            login_state = decrypt_login_state(cookie_value)
+            login_state = self.wristband_auth._decrypt_login_state(cookie_value)
             # Should be None when not specified anywhere
             assert login_state.return_url is None
 
@@ -352,7 +351,7 @@ class TestWristbandAuthLogin:
             # Validate login state cookie is set and decrypt to check both values
             _, cookie_value = assert_single_login_cookie_valid(response)
 
-            login_state = decrypt_login_state(cookie_value)
+            login_state = self.wristband_auth._decrypt_login_state(cookie_value)
             assert login_state.custom_state == custom_state
             assert login_state.return_url == return_url
 

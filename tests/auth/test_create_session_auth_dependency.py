@@ -34,14 +34,14 @@ class TestCreateSessionAuthDependency:
         request.headers = {"X-CSRF-TOKEN": "valid_csrf_token"}
 
         # Create mock session with attributes
-        session_manager = Mock()
-        session_manager.is_authenticated = True
-        session_manager.csrf_token = "valid_csrf_token"
-        session_manager.refresh_token = "valid_refresh_token"
-        session_manager.expires_at = 9999999999999
-        session_manager.access_token = "valid_access_token"
-        session_manager.save = Mock()
-        request.state.session = session_manager
+        session = Mock()
+        session.is_authenticated = True
+        session.csrf_token = "valid_csrf_token"
+        session.refresh_token = "valid_refresh_token"
+        session.expires_at = 9999999999999
+        session.access_token = "valid_access_token"
+        session.save = Mock()
+        request.state.session = session
 
         return request
 
@@ -76,14 +76,14 @@ class TestCreateSessionAuthDependency:
         request.state = Mock()
         request.headers = {"X-Custom-CSRF": "valid_csrf_token"}
 
-        session_manager = Mock()
-        session_manager.is_authenticated = True
-        session_manager.csrf_token = "valid_csrf_token"
-        session_manager.refresh_token = "valid_refresh_token"
-        session_manager.expires_at = 9999999999999
-        session_manager.access_token = "valid_access_token"
-        session_manager.save = Mock()
-        request.state.session = session_manager
+        session = Mock()
+        session.is_authenticated = True
+        session.csrf_token = "valid_csrf_token"
+        session.refresh_token = "valid_refresh_token"
+        session.expires_at = 9999999999999
+        session.access_token = "valid_access_token"
+        session.save = Mock()
+        request.state.session = session
 
         with patch("wristband.fastapi_auth.auth.is_csrf_token_valid", return_value=True) as mock_csrf:
             with patch.object(wristband_auth, "refresh_token_if_expired", new_callable=AsyncMock) as mock_refresh:
@@ -112,7 +112,7 @@ class TestCreateSessionAuthDependency:
         with pytest.raises(RuntimeError) as exc_info:
             await dependency(request, mock_response)
 
-        assert "Session manager not found" in str(exc_info.value)
+        assert "Session not found" in str(exc_info.value)
         assert "SessionMiddleware" in str(exc_info.value)
 
     @pytest.mark.asyncio
@@ -126,9 +126,9 @@ class TestCreateSessionAuthDependency:
         request.url.path = "/api/protected"
         request.state = Mock()
 
-        session_manager = Mock()
-        session_manager.is_authenticated = False
-        request.state.session = session_manager
+        session = Mock()
+        session.is_authenticated = False
+        request.state.session = session
 
         dependency = wristband_auth.create_session_auth_dependency()
 
@@ -162,10 +162,10 @@ class TestCreateSessionAuthDependency:
         request.state = Mock()
         request.headers = {"X-Custom-CSRF": "wrong_token"}
 
-        session_manager = Mock()
-        session_manager.is_authenticated = True
-        session_manager.csrf_token = "valid_csrf_token"
-        request.state.session = session_manager
+        session = Mock()
+        session.is_authenticated = True
+        session.csrf_token = "valid_csrf_token"
+        request.state.session = session
 
         with patch("wristband.fastapi_auth.csrf.is_csrf_token_valid", return_value=False):
             dependency = wristband_auth.create_session_auth_dependency(csrf_header_name="X-Custom-CSRF")
@@ -238,10 +238,10 @@ class TestCreateSessionAuthDependency:
                 mock_authenticated_request.state.session.save.assert_called_once_with()
 
     @pytest.mark.asyncio
-    async def test_dependency_returns_none_on_success(
+    async def test_dependency_returns_session_on_success(
         self, wristband_auth: WristbandAuth, mock_authenticated_request: Request, mock_response: Response
     ) -> None:
-        """Test that dependency returns None on successful authentication"""
+        """Test that dependency returns typed Session on successful authentication"""
         with patch("wristband.fastapi_auth.csrf.is_csrf_token_valid", return_value=True):
             with patch.object(wristband_auth, "refresh_token_if_expired", new_callable=AsyncMock) as mock_refresh:
                 mock_refresh.return_value = None
@@ -249,7 +249,55 @@ class TestCreateSessionAuthDependency:
                 dependency = wristband_auth.create_session_auth_dependency()
                 result = await dependency(mock_authenticated_request, mock_response)
 
-                assert result is None
+                # Should return the session object, not None
+                assert result is mock_authenticated_request.state.session
+                assert result.is_authenticated is True
+
+    @pytest.mark.asyncio
+    async def test_dependency_returns_session_after_token_refresh(
+        self, wristband_auth: WristbandAuth, mock_authenticated_request: Request, mock_response: Response
+    ) -> None:
+        """Test that dependency returns session with updated tokens after refresh"""
+        new_token_data = TokenData(
+            access_token="new_access_token",
+            id_token="new_id_token",
+            expires_at=9999999999999,
+            expires_in=3600,
+            refresh_token="new_refresh_token",
+        )
+
+        with patch("wristband.fastapi_auth.csrf.is_csrf_token_valid", return_value=True):
+            with patch.object(wristband_auth, "refresh_token_if_expired", new_callable=AsyncMock) as mock_refresh:
+                mock_refresh.return_value = new_token_data
+
+                dependency = wristband_auth.create_session_auth_dependency()
+                result = await dependency(mock_authenticated_request, mock_response)
+
+                # Verify returned session has the new tokens
+                assert result is mock_authenticated_request.state.session
+                assert result.access_token == "new_access_token"
+                assert result.refresh_token == "new_refresh_token"
+                assert result.expires_at == 9999999999999
+
+    @pytest.mark.asyncio
+    async def test_dependency_can_be_used_as_typed_injection(
+        self, wristband_auth: WristbandAuth, mock_authenticated_request: Request, mock_response: Response
+    ) -> None:
+        """Test that dependency can be used for typed session injection in FastAPI routes"""
+        from wristband.fastapi_auth.session import Session
+
+        with patch("wristband.fastapi_auth.csrf.is_csrf_token_valid", return_value=True):
+            with patch.object(wristband_auth, "refresh_token_if_expired", new_callable=AsyncMock) as mock_refresh:
+                mock_refresh.return_value = None
+
+                dependency = wristband_auth.create_session_auth_dependency()
+                session: Session = await dependency(mock_authenticated_request, mock_response)
+
+                # Verify we can access typed Session attributes
+                assert hasattr(session, "is_authenticated")
+                assert hasattr(session, "user_id")
+                assert hasattr(session, "access_token")
+                assert session.is_authenticated is True
 
     @pytest.mark.asyncio
     async def test_dependency_is_reusable(

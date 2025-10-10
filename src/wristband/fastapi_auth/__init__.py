@@ -14,6 +14,7 @@ from .models import (
     UserInfo,
     UserInfoRole,
 )
+from .session import Session, get_session
 
 # Explicitly define what's available for import
 __all__ = [
@@ -21,8 +22,10 @@ __all__ = [
     "CallbackData",
     "CallbackResult",
     "CallbackResultType",
+    "get_session",
     "LoginConfig",
     "LogoutConfig",
+    "Session",
     "SessionMiddleware",
     "SessionResponse",
     "TokenData",
