@@ -1,6 +1,10 @@
+from unittest.mock import patch
+
 import pytest
+from fastapi import HTTPException, Response
 
 from wristband.fastapi_auth import CallbackData, UserInfo
+from wristband.fastapi_auth.models import SameSiteOption, SessionResponse, TokenResponse
 from wristband.fastapi_auth.session import SessionManager
 from wristband.fastapi_auth.utils import DataEncryptor
 
@@ -27,8 +31,32 @@ def session(encryptor):
         csrf_cookie_domain=None,
         max_age=3600,
         path="/",
-        same_site="lax",
+        same_site=SameSiteOption.LAX,
         secure=True,
+        enable_csrf_protection=True,
+    )
+
+
+@pytest.fixture
+def response():
+    """Mock FastAPI Response object"""
+    return Response()
+
+
+@pytest.fixture
+def session_no_csrf(encryptor):
+    """Session with CSRF protection disabled"""
+    return SessionManager(
+        encryptor=encryptor,
+        session_cookie_name="session",
+        session_cookie_domain=None,
+        csrf_cookie_name="CSRF-TOKEN",
+        csrf_cookie_domain=None,
+        max_age=3600,
+        path="/",
+        same_site=SameSiteOption.LAX,
+        secure=True,
+        enable_csrf_protection=False,
     )
 
 
@@ -449,13 +477,16 @@ class TestSessionSaveAndClear:
         assert session._needs_save is True  # Still true
 
     def test_save_does_not_modify_data(self, session):
-        """Test that save() only sets flag, doesn't change data"""
+        """Test that save() only sets flag and adds CSRF token if enabled"""
         session["user_id"] = "test_user"
-        original_data = session.to_dict()
 
         session.save()
 
-        assert session.to_dict() == original_data
+        # User data should still be there
+        assert session["user_id"] == "test_user"
+
+        # CSRF token may be added when protection is enabled
+        assert "csrf_token" in session
 
     def test_clear_empties_data(self, session):
         session["user_id"] = "test_user"
@@ -889,3 +920,449 @@ class TestSessionEdgeCases:
         session[long_key] = "value"
 
         assert session[long_key] == "value"
+
+
+class TestLoadFromDict:
+    """Test internal _load_from_dict method"""
+
+    def test_load_from_dict_loads_session_data(self, session):
+        """Test that _load_from_dict populates session with provided data"""
+        data = {
+            "user_id": "user_123",
+            "tenant_id": "tenant_123",
+            "is_authenticated": True,
+            "custom_field": "custom_value",
+        }
+
+        session._load_from_dict(data)
+
+        assert session["user_id"] == "user_123"
+        assert session["tenant_id"] == "tenant_123"
+        assert session["is_authenticated"] is True
+        assert session["custom_field"] == "custom_value"
+        assert len(session) == 4
+
+
+class TestPersist:
+    """Test internal _persist method that orchestrates cookie operations"""
+
+    def test_persist_calls_delete_cookies_when_needs_clear_true(self, session, response):
+        """Test _persist calls _delete_cookies when clear() was called"""
+        session["user_id"] = "test"
+        session.clear()
+
+        with patch("wristband.fastapi_auth.session.SessionManager._delete_cookies") as mock_delete:
+            session._persist(response)
+            mock_delete.assert_called_once_with(response)
+
+    def test_persist_calls_write_cookies_when_needs_save_true(self, session, response):
+        """Test _persist calls _write_cookies when save() was called"""
+        session["user_id"] = "test"
+        session.save()
+
+        with patch("wristband.fastapi_auth.session.SessionManager._write_cookies") as mock_write:
+            session._persist(response)
+            mock_write.assert_called_once_with(response)
+
+    def test_persist_does_nothing_when_both_flags_false(self, session, response):
+        """Test _persist does nothing when neither save() nor clear() was called"""
+        session["user_id"] = "test"
+        # Don't call save() or clear()
+
+        with (
+            patch("wristband.fastapi_auth.session.SessionManager._write_cookies") as mock_write,
+            patch("wristband.fastapi_auth.session.SessionManager._delete_cookies") as mock_delete,
+        ):
+            session._persist(response)
+            mock_write.assert_not_called()
+            mock_delete.assert_not_called()
+
+    def test_persist_clear_takes_precedence_over_save(self, session, response):
+        """Test that when both flags are set, _needs_clear takes precedence"""
+        session["user_id"] = "test"
+        session.save()  # Sets _needs_save = True
+        session.clear()  # Sets _needs_clear = True, _needs_save = False
+
+        with (
+            patch("wristband.fastapi_auth.session.SessionManager._delete_cookies") as mock_delete,
+            patch("wristband.fastapi_auth.session.SessionManager._write_cookies") as mock_write,
+        ):
+            session._persist(response)
+            mock_delete.assert_called_once_with(response)
+            mock_write.assert_not_called()
+
+
+class TestWriteCookies:
+    """Test internal _write_cookies method"""
+
+    def test_write_cookies_encrypts_session_data(self, session, response):
+        """Test that session data is encrypted before writing"""
+        session["user_id"] = "user_123"
+        session["tenant_id"] = "tenant_123"
+
+        with patch.object(session._encryptor, "encrypt", wraps=session._encryptor.encrypt) as mock_encrypt:
+            session._write_cookies(response)
+            mock_encrypt.assert_called_once()
+            # Verify the data passed to encrypt
+            call_args = mock_encrypt.call_args[0][0]
+            assert call_args["user_id"] == "user_123"
+            assert call_args["tenant_id"] == "tenant_123"
+
+    def test_write_cookies_sets_session_cookie_with_correct_attributes(self, session, response):
+        """Test that session cookie is set with all correct attributes"""
+        session["user_id"] = "test_user"
+
+        session._write_cookies(response)
+
+        # Check cookie was set
+        assert "session" in response.headers.getlist("set-cookie")[0]
+        cookie_header = response.headers.getlist("set-cookie")[0]
+
+        # Verify attributes in cookie header
+        assert "Path=/" in cookie_header
+        assert "Max-Age=3600" in cookie_header
+        assert "SameSite=lax" in cookie_header
+        assert "Secure" in cookie_header
+        assert "HttpOnly" in cookie_header
+
+    def test_write_cookies_sets_csrf_cookie_when_enabled(self, session, response):
+        """Test CSRF cookie is written when enable_csrf_protection=True"""
+        session["user_id"] = "user_123"
+        session["csrf_token"] = "test_csrf_token_12345678901234567890"
+
+        session._write_cookies(response)
+
+        # Should have 2 cookies: session + CSRF
+        cookies = response.headers.getlist("set-cookie")
+        assert len(cookies) == 2
+
+        # Find CSRF cookie
+        csrf_cookie = [c for c in cookies if "CSRF-TOKEN" in c][0]
+        assert "test_csrf_token_12345678901234567890" in csrf_cookie
+
+    def test_write_cookies_does_not_set_csrf_cookie_when_disabled(self, session_no_csrf, response):
+        """Test CSRF cookie is NOT written when enable_csrf_protection=False"""
+        session_no_csrf["user_id"] = "user_123"
+
+        session_no_csrf._write_cookies(response)
+
+        # Should have only 1 cookie: session
+        cookies = response.headers.getlist("set-cookie")
+        assert len(cookies) == 1
+        assert "session" in cookies[0]
+        assert "CSRF-TOKEN" not in cookies[0]
+
+    def test_write_cookies_raises_when_cookie_exceeds_4096_bytes(self, session, response):
+        """Test ValueError is raised when encrypted session exceeds 4096 byte limit"""
+        # Create large session data that will exceed limit after encryption
+        large_data = "x" * 4000
+        session["large_field"] = large_data
+
+        with pytest.raises(ValueError, match="Session cookie exceeds browser limit"):
+            session._write_cookies(response)
+
+    def test_write_cookies_calculates_overhead_correctly(self, session, response):
+        """Test that cookie overhead calculation includes all attributes"""
+        session["user_id"] = "test"
+
+        # The error message should show overhead calculation
+        # Create data that's close to limit to trigger calculation
+        session["data"] = "x" * 3500
+
+        try:
+            session._write_cookies(response)
+        except ValueError as e:
+            error_msg = str(e)
+            assert "overhead:" in error_msg
+            assert "bytes" in error_msg
+
+    def test_write_cookies_with_custom_domain(self, encryptor, response):
+        """Test session cookie includes Domain attribute when configured"""
+        session_with_domain = SessionManager(
+            encryptor=encryptor,
+            session_cookie_name="session",
+            session_cookie_domain=".example.com",
+            csrf_cookie_name="CSRF-TOKEN",
+            csrf_cookie_domain=".example.com",
+            max_age=3600,
+            path="/",
+            same_site=SameSiteOption.LAX,
+            secure=True,
+            enable_csrf_protection=False,
+        )
+        session_with_domain["user_id"] = "test"
+
+        session_with_domain._write_cookies(response)
+
+        cookie_header = response.headers.getlist("set-cookie")[0]
+        assert "Domain=.example.com" in cookie_header
+
+    def test_write_cookies_respects_same_site_strict(self, encryptor, response):
+        """Test SameSite=strict is set correctly"""
+        session_strict = SessionManager(
+            encryptor=encryptor,
+            session_cookie_name="session",
+            session_cookie_domain=None,
+            csrf_cookie_name="CSRF-TOKEN",
+            csrf_cookie_domain=None,
+            max_age=3600,
+            path="/",
+            same_site=SameSiteOption.STRICT,
+            secure=True,
+            enable_csrf_protection=False,
+        )
+        session_strict["user_id"] = "test"
+
+        session_strict._write_cookies(response)
+
+        cookie_header = response.headers.getlist("set-cookie")[0]
+        assert "SameSite=strict" in cookie_header
+
+    def test_write_cookies_respects_same_site_none(self, encryptor, response):
+        """Test SameSite=none is set correctly"""
+        session_none = SessionManager(
+            encryptor=encryptor,
+            session_cookie_name="session",
+            session_cookie_domain=None,
+            csrf_cookie_name="CSRF-TOKEN",
+            csrf_cookie_domain=None,
+            max_age=3600,
+            path="/",
+            same_site=SameSiteOption.NONE,
+            secure=True,
+            enable_csrf_protection=False,
+        )
+        session_none["user_id"] = "test"
+
+        session_none._write_cookies(response)
+
+        cookie_header = response.headers.getlist("set-cookie")[0]
+        assert "SameSite=none" in cookie_header
+
+    def test_write_cookies_respects_secure_false(self, encryptor, response):
+        """Test that secure=False doesn't include Secure attribute (for local dev)"""
+        session_insecure = SessionManager(
+            encryptor=encryptor,
+            session_cookie_name="session",
+            session_cookie_domain=None,
+            csrf_cookie_name="CSRF-TOKEN",
+            csrf_cookie_domain=None,
+            max_age=3600,
+            path="/",
+            same_site=SameSiteOption.LAX,
+            secure=False,  # Insecure for testing
+            enable_csrf_protection=False,
+        )
+        session_insecure["user_id"] = "test"
+
+        session_insecure._write_cookies(response)
+
+        cookie_header = response.headers.getlist("set-cookie")[0]
+        # Verify Secure attribute is NOT present when secure=False
+        assert "Secure" not in cookie_header
+        assert session_insecure._secure is False
+
+
+class TestDeleteCookies:
+    """Test internal _delete_cookies method"""
+
+    def test_delete_cookies_deletes_session_cookie(self, session, response):
+        """Test that session cookie is deleted (value='', max_age=0)"""
+        session._delete_cookies(response)
+
+        cookie_header = response.headers.getlist("set-cookie")[0]
+        assert "session=" in cookie_header  # Cookie name present
+        assert "Max-Age=0" in cookie_header  # Expiry set to 0
+        # Value should be empty or very short
+
+    def test_delete_cookies_deletes_csrf_cookie_when_enabled(self, session, response):
+        """Test CSRF cookie is deleted when enable_csrf_protection=True"""
+        session._delete_cookies(response)
+
+        cookies = response.headers.getlist("set-cookie")
+        # Should have 2 delete cookies: session + CSRF
+        assert len(cookies) == 2
+
+        csrf_cookie = [c for c in cookies if "CSRF-TOKEN" in c][0]
+        assert "Max-Age=0" in csrf_cookie or "max-age=0" in csrf_cookie.lower()
+
+    def test_delete_cookies_does_not_delete_csrf_when_disabled(self, session_no_csrf, response):
+        """Test CSRF cookie is NOT deleted when enable_csrf_protection=False"""
+        session_no_csrf._delete_cookies(response)
+
+        cookies = response.headers.getlist("set-cookie")
+        # Should have only 1 delete cookie: session
+        assert len(cookies) == 1
+        assert "session" in cookies[0]
+
+
+class TestGetSessionResponse:
+    """Test get_session_response() method for Wristband SDK integration"""
+
+    def test_get_session_response_with_valid_data(self, session):
+        """Test get_session_response returns SessionResponse with valid data"""
+        session["tenant_id"] = "tenant_123"
+        session["user_id"] = "user_123"
+
+        result = session.get_session_response()
+
+        assert isinstance(result, SessionResponse)
+        assert result.tenant_id == "tenant_123"
+        assert result.user_id == "user_123"
+        assert result.metadata == {}
+
+    def test_get_session_response_with_metadata(self, session):
+        """Test get_session_response includes provided metadata"""
+        session["tenant_id"] = "tenant_123"
+        session["user_id"] = "user_123"
+
+        metadata = {"role": "admin", "department": "engineering"}
+        result = session.get_session_response(metadata)
+
+        assert result.metadata == metadata
+        assert result.metadata["role"] == "admin"
+
+    def test_get_session_response_with_empty_metadata(self, session):
+        """Test get_session_response with explicitly empty metadata"""
+        session["tenant_id"] = "tenant_123"
+        session["user_id"] = "user_123"
+
+        result = session.get_session_response(metadata={})
+
+        assert result.metadata == {}
+
+    def test_get_session_response_raises_when_tenant_id_missing(self, session):
+        """Test HTTPException 401 when tenant_id is missing"""
+        session["user_id"] = "user_123"
+        # tenant_id not set
+
+        with pytest.raises(HTTPException) as exc_info:
+            session.get_session_response()
+
+        assert exc_info.value.status_code == 401
+
+    def test_get_session_response_raises_when_user_id_missing(self, session):
+        """Test HTTPException 401 when user_id is missing"""
+        session["tenant_id"] = "tenant_123"
+        # user_id not set
+
+        with pytest.raises(HTTPException) as exc_info:
+            session.get_session_response()
+
+        assert exc_info.value.status_code == 401
+
+    def test_get_session_response_raises_when_both_missing(self, session):
+        """Test HTTPException 401 when both tenant_id and user_id are missing"""
+        # Neither set
+
+        with pytest.raises(HTTPException) as exc_info:
+            session.get_session_response()
+
+        assert exc_info.value.status_code == 401
+
+
+class TestGetTokenResponse:
+    """Test get_token_response() method for Wristband SDK integration"""
+
+    def test_get_token_response_with_valid_data(self, session):
+        """Test get_token_response returns TokenResponse with valid data"""
+        session["access_token"] = "access_token_123"
+        session["expires_at"] = 1234567890000
+
+        result = session.get_token_response()
+
+        assert isinstance(result, TokenResponse)
+        assert result.access_token == "access_token_123"
+        assert result.expires_at == 1234567890000
+
+    def test_get_token_response_raises_when_access_token_missing(self, session):
+        """Test HTTPException 401 when access_token is missing"""
+        session["expires_at"] = 1234567890000
+        # access_token not set
+
+        with pytest.raises(HTTPException) as exc_info:
+            session.get_token_response()
+
+        assert exc_info.value.status_code == 401
+
+    def test_get_token_response_raises_when_expires_at_missing(self, session):
+        """Test HTTPException 401 when expires_at is missing"""
+        session["access_token"] = "access_token_123"
+        # expires_at not set
+
+        with pytest.raises(HTTPException) as exc_info:
+            session.get_token_response()
+
+        assert exc_info.value.status_code == 401
+
+    def test_get_token_response_raises_when_both_missing(self, session):
+        """Test HTTPException 401 when both access_token and expires_at are missing"""
+        # Neither set
+
+        with pytest.raises(HTTPException) as exc_info:
+            session.get_token_response()
+
+        assert exc_info.value.status_code == 401
+
+
+class TestCSRFProtectionScenarios:
+    """Test CSRF protection enabled vs disabled behavior"""
+
+    def test_csrf_cookie_not_written_when_protection_disabled(self, session_no_csrf, response):
+        """Test that no CSRF cookie is written when protection is disabled"""
+        session_no_csrf["user_id"] = "test"
+        session_no_csrf["csrf_token"] = "should_be_ignored"
+
+        session_no_csrf._write_cookies(response)
+
+        cookies = response.headers.getlist("set-cookie")
+        csrf_cookies = [c for c in cookies if "CSRF-TOKEN" in c]
+        assert len(csrf_cookies) == 0
+
+    def test_csrf_cookie_not_deleted_when_protection_disabled(self, session_no_csrf, response):
+        """Test that no CSRF cookie delete is attempted when protection is disabled"""
+        session_no_csrf._delete_cookies(response)
+
+        cookies = response.headers.getlist("set-cookie")
+        # Should only have session cookie deletion
+        assert len(cookies) == 1
+        assert "session" in cookies[0]
+
+
+class TestCookieEdgeCases:
+    """Test edge cases for cookie operations"""
+
+    def test_write_cookies_with_empty_session(self, session, response):
+        """Test writing cookies when session is completely empty"""
+        # Session has no data at all
+        assert len(session) == 0
+
+        session._write_cookies(response)
+
+        # Should still write cookie (with empty encrypted data)
+        cookies = response.headers.getlist("set-cookie")
+        assert len(cookies) >= 1
+        assert "session" in cookies[0]
+
+    def test_write_cookies_with_only_csrf_token(self, session, response):
+        """Test writing cookies when session only contains csrf_token"""
+        session["csrf_token"] = "a" * 32
+
+        session._write_cookies(response)
+
+        cookies = response.headers.getlist("set-cookie")
+        # Should have session cookie + CSRF cookie
+        assert len(cookies) == 2
+
+    def test_write_cookies_near_size_limit(self, session, response):
+        """Test session that's close to but under the 4096 byte limit"""
+        # Create session data that's near the limit
+        # Account for encryption overhead and cookie attributes
+        # Encrypted size is typically ~1.5x original, plus ~200 bytes overhead
+        session["data"] = "x" * 2500  # Should be under limit after encryption
+
+        # Should NOT raise
+        session._write_cookies(response)
+
+        cookies = response.headers.getlist("set-cookie")
+        assert len(cookies) >= 1

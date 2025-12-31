@@ -1,7 +1,8 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, Iterator, List, Optional, Protocol, TypedDict, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+from wristband.python_jwt import JWTPayload
 
 ########################################
 # AUTH CONFIG MODELS
@@ -35,7 +36,7 @@ class AuthConfig(BaseModel):
         is_application_custom_domain_active: Indicates whether an application-level custom domain
             is active in your Wristband application. This field is auto-configurable.
         parse_tenant_from_root_domain: The root domain for your application from which to parse
-            out the tenant domain name. Indicates whether tenant subdomains are used for authentication.
+            out the tenant name. Indicates whether tenant subdomains are used for authentication.
             This field is auto-configurable.
         scopes: The scopes required for authentication.
         token_expiration_buffer: Buffer time (in seconds) to subtract from the access token’s expiration time.
@@ -113,7 +114,7 @@ class LoginConfig(BaseModel):
             login request in the event the tenant custom domain cannot be found in the
             "tenant_custom_domain" request query parameter.
         default_tenant_name: An optional default tenant name to use for the login request in the
-            event the name cannot be found in either the subdomain or the "tenant_domain" request
+            event the name cannot be found in either the subdomain or the "tenant_name" request
             query parameter (depending on your subdomain configuration).
         return_url: The URL to return to after authentication is completed. If a value is provided,
             then it takes precence over the `return_url` request query parameter.
@@ -140,7 +141,7 @@ class OAuthAuthorizeUrlConfig(BaseModel):
             login request in the event the tenant custom domain cannot be found in the
             "tenant_custom_domain" request query parameter.
         default_tenant_name: An optional default tenant name to use for the login request in the event
-            the name cannot be found in either the subdomain or the "tenant_domain" request query
+            the name cannot be found in either the subdomain or the "tenant_name" request query
             parameter (depending on your subdomain configuration).
         tenant_custom_domain: The tenant custom domain for the current login request.
         tenant_name: The name of the tenant for the current login request.
@@ -195,8 +196,25 @@ class CallbackResultType(Enum):
         REDIRECT_REQUIRED: Indicates that a redirect is required, generally to a login route or page.
     """
 
-    COMPLETED = "COMPLETED"
-    REDIRECT_REQUIRED = "REDIRECT_REQUIRED"
+    COMPLETED = "completed"
+    REDIRECT_REQUIRED = "redirect_required"
+
+
+class CallbackFailureReason(Enum):
+    """
+    Reason why callback processing failed and requires a redirect to retry authentication.
+
+    Attributes:
+        MISSING_LOGIN_STATE: Login state cookie was not found (cookie expired or bookmarked callback URL)
+        INVALID_LOGIN_STATE: Login state validation failed (possible CSRF attack or cookie tampering)
+        LOGIN_REQUIRED: Wristband returned a login_required error (session expired or max_age elapsed)
+        INVALID_GRANT: Authorization code was invalid, expired, or already used
+    """
+
+    MISSING_LOGIN_STATE = "missing_login_state"
+    INVALID_LOGIN_STATE = "invalid_login_state"
+    LOGIN_REQUIRED = "login_required"
+    INVALID_GRANT = "invalid_grant"
 
 
 class UserInfoRole(BaseModel):
@@ -461,20 +479,34 @@ class TokenData(BaseModel):
     refresh_token: str
 
 
-class CallbackResult(BaseModel):
-    """
-    Represents the result of the callback execution after authentication. It can include the set of
-    callback data necessary for creating an authenticated session in the event a redirect is not required.
+class CompletedCallbackResult(BaseModel):
+    """Callback successfully completed with data for creating a session."""
 
-    Attributes:
-        callback_data: The callback data received after authentication (COMPLETED only).
-        type: Enum representing the end result of callback execution.
-        redirect_url: The URL to redirect to (REDIRECT_REQUIRED only).
-    """
+    type: CallbackResultType = Field(CallbackResultType.COMPLETED, frozen=True)
+    """Discriminator field indicating successful completion."""
+    callback_data: CallbackData
+    """Data returned from successful callback processing, used to create user session."""
 
-    callback_data: Optional[CallbackData]
-    type: CallbackResultType
-    redirect_url: Optional[str]
+
+class RedirectRequiredCallbackResult(BaseModel):
+    """Redirect is required, generally to a login route or page."""
+
+    type: CallbackResultType = Field(CallbackResultType.REDIRECT_REQUIRED, frozen=True)
+    """Discriminator field indicating redirect is required."""
+    redirect_url: str
+    """URL to redirect the user to retry authentication."""
+    reason: CallbackFailureReason
+    """Specific reason why the callback failed and requires redirect."""
+
+
+CallbackResult = Annotated[Union[CompletedCallbackResult, RedirectRequiredCallbackResult], Field(discriminator="type")]
+"""
+Union type representing the result of OAuth callback processing.
+
+The discriminator field 'type' is used to determine which variant:
+- CallbackResultType.COMPLETED: Callback succeeded, contains callback_data
+- CallbackResultType.REDIRECT_REQUIRED: Callback failed, contains redirect_url and reason
+"""
 
 
 class WristbandTokenResponse(BaseModel):
@@ -603,3 +635,527 @@ class TokenResponse(BaseModel):
 
     access_token: str = Field(serialization_alias="accessToken")
     expires_at: int = Field(serialization_alias="expiresAt")
+
+
+########################################
+# SESSION MIDDLEWARE MODELS
+########################################
+
+
+class SameSiteOption(Enum):
+    """
+    Represents the SameSite attribute for cookies, which controls if cookies are sent along with cross-site requests.
+
+    Values:
+        STRICT: Cookies are only sent for same-site requests (best CSRF protection).
+        LAX: Cookies are sent for same-site requests and top-level navigation GET requests (default in most browsers).
+        NONE: Cookies are sent in all contexts, including cross-site requests. Must be used with
+              secure=True in modern browsers.
+    """
+
+    STRICT = "strict"
+    """Cookies only sent for same-site requests (best CSRF protection)."""
+
+    LAX = "lax"
+    """Cookies sent for same-site + top-level navigation GET requests (default)."""
+
+    NONE = "none"
+    """Cookies sent for all requests (requires secure=True)."""
+
+
+class Session(Protocol):
+    """
+    Protocol for type-safe session access.
+
+    This protocol defines the interface for session objects created by SessionMiddleware.
+    Extend this protocol to add type hints for your custom session fields.
+
+    Base fields (automatically set by from_callback()):
+        is_authenticated: Whether the user is authenticated
+        access_token: JWT access token for API calls
+        expires_at: Token expiration timestamp (milliseconds since Unix epoch)
+        user_id: Unique identifier for the authenticated user
+        tenant_id: Unique identifier for the user's tenant
+        tenant_name: Name of the user's tenant
+        identity_provider_name: Name of the identity provider that the user belongs to.
+        refresh_token: Optional refresh token (requires 'offline_access' scope)
+        tenant_custom_domain: Optional custom domain for the tenant
+
+    Other session fields:
+        csrf_token: CSRF token for request validation (only present if enable_csrf_protection=True)
+
+    Example - Using base fields only:
+        from fastapi import Depends
+        from wristband.fastapi_auth import get_session, Session
+
+        @router.get("/profile")
+        async def get_profile(session: Session = Depends(get_session)):
+            user_id = session.user_id  # Base fields available
+            return {"userId": user_id}
+
+    Example - Adding custom typed fields:
+        from typing import cast, Protocol
+        from wristband.fastapi_auth import get_session, SessionProtocol
+
+        class MySession(SessionProtocol, Protocol):
+            role: str
+            preferences: dict
+            last_login: int
+
+        @router.get("/profile")
+        async def get_profile(session: MySession = Depends(get_session)):  # type: ignore[assignment]
+            # All fields are now typed
+            user_id = session.user_id  # Base field
+            role = session.role  # Custom field
+            return {"userId": user_id, "role": role}
+
+        # Or use cast():
+        @router.get("/profile")
+        async def get_profile(request: Request):
+            session = cast(MySession, get_session(request))
+            role = session.role  # Fully typed!
+    """
+
+    # ============================================================================
+    # BASE SESSION FIELDS
+    # ============================================================================
+
+    is_authenticated: Optional[bool]
+    """
+    Whether the user is authenticated. Set to True by from_callback().
+    """
+
+    access_token: Optional[str]
+    """
+    JWT access token for making authenticated API calls to Wristband and other services.
+    """
+
+    expires_at: Optional[int]
+    """
+    Token expiration time as Unix timestamp in milliseconds.
+    Accounts for token_expiration_buffer from SDK config.
+    """
+
+    user_id: Optional[str]
+    """
+    Unique identifier for the authenticated user.
+    """
+
+    tenant_id: Optional[str]
+    """
+    Unique identifier for the tenant that the user belongs to.
+    """
+
+    tenant_name: Optional[str]
+    """
+    Name of the tenant that the user belongs to.
+    """
+
+    identity_provider_name: Optional[str]
+    """
+    Name of the identity provider that the user belongs to.
+    """
+
+    csrf_token: Optional[str]
+    """
+    CSRF token for request validation. Automatically generated when save() is called
+    if enable_csrf_protection is True.
+    """
+
+    refresh_token: Optional[str]
+    """
+    Refresh token for obtaining new access tokens when they expire.
+    Only present if 'offline_access' scope was requested during authentication.
+    """
+
+    tenant_custom_domain: Optional[str]
+    """
+    Custom domain for the tenant, if configured.
+    Only present if a tenant custom domain was used during authentication.
+    """
+
+    # ============================================================================
+    # DICTIONARY-STYLE ACCESS METHODS
+    # ============================================================================
+
+    def __getattr__(self, key: str) -> Any:
+        """
+        Allow attribute-style access to session data.
+
+        This enables both base fields and custom fields to be accessed as attributes.
+
+        Args:
+            key: The attribute name to access
+
+        Returns:
+            The value associated with the key, or None if not found
+
+        Example:
+            user_id = session.user_id  # Base field
+            role = session.role  # Custom field (if extended protocol)
+        """
+        ...
+
+    def __setattr__(self, key: str, value: Any) -> None:
+        """
+        Allow attribute-style setting of session data.
+
+        Args:
+            key: The attribute name to set
+            value: The value to store (must be JSON-serializable)
+
+        Raises:
+            ValueError: If value is not JSON-serializable
+
+        Example:
+            session.user_id = "123"
+            session.role = "admin"
+        """
+        ...
+
+    def __getitem__(self, key: str) -> Any:
+        """
+        Get session value by key (dict-style access).
+
+        Args:
+            key: The session key to retrieve
+
+        Returns:
+            The value associated with key
+
+        Raises:
+            KeyError: If key doesn't exist
+
+        Example:
+            user_id = session['user_id']
+        """
+        ...
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """
+        Set session value by key (dict-style access).
+
+        Args:
+            key: The session key to set
+            value: The value to store (must be JSON-serializable)
+
+        Raises:
+            ValueError: If value is not JSON-serializable
+
+        Example:
+            session['cart'] = {'items': [], 'total': 0}
+        """
+        ...
+
+    def __delitem__(self, key: str) -> None:
+        """
+        Delete session value by key.
+
+        Args:
+            key: The session key to delete
+
+        Raises:
+            KeyError: If key doesn't exist
+
+        Example:
+            del session['temporary_data']
+        """
+        ...
+
+    def __contains__(self, key: str) -> bool:
+        """
+        Check if key exists in session.
+
+        Args:
+            key: The session key to check
+
+        Returns:
+            True if key exists, False otherwise
+
+        Example:
+            if 'cart' in session:
+                cart = session['cart']
+        """
+        ...
+
+    def __len__(self) -> int:
+        """
+        Return number of items in session.
+
+        Returns:
+            Count of session keys
+
+        Example:
+            item_count = len(session)
+        """
+        ...
+
+    def __iter__(self) -> Iterator[str]:
+        """
+        Iterate over session keys.
+
+        Returns:
+            Iterator over session keys
+
+        Example:
+            for key in session:
+                print(f"{key}: {session[key]}")
+        """
+        ...
+
+    # ============================================================================
+    # SESSION LIFECYCLE METHODS
+    # ============================================================================
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Get a session value with optional default.
+
+        Args:
+            key: The session key to retrieve
+            default: Value to return if key doesn't exist
+
+        Returns:
+            The value associated with key, or default if not found
+
+        Example:
+            cart = session.get('cart', {'items': []})
+            theme = session.get('theme', 'light')
+        """
+        ...
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Get a shallow copy of all session data as a dictionary.
+
+        Returns:
+            Dictionary containing all session key-value pairs
+
+        Example:
+            session_data = session.to_dict()
+            return {"session": session_data}
+        """
+        ...
+
+    def from_callback(self, callback_data: CallbackData, custom_fields: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Initialize session from Wristband authentication callback data.
+
+        This convenience method populates the session with authentication data
+        after successful login. It automatically extracts user info, tokens, and
+        tenant data from the callback and marks the session for persistence.
+
+        Args:
+            callback_data: Authentication data returned from wristband_auth.callback()
+            custom_fields: Optional additional fields to store (must be JSON-serializable)
+
+        Raises:
+            ValueError: If callback_data is None, user_info is missing, or
+                       custom_fields aren't JSON-serializable
+
+        Fields automatically set:
+            - is_authenticated (True)
+            - access_token
+            - expires_at
+            - user_id (from user_info.user_id)
+            - tenant_id (from user_info.tenant_id)
+            - tenant_name
+            - identity_provider_name (from user_info.identity_provider_name)
+            - refresh_token (if present in callback_data)
+            - tenant_custom_domain (if present in callback_data)
+
+        Example:
+            # Basic usage
+            callback_result = await wristband_auth.callback(request)
+            request.state.session.from_callback(callback_result.callback_data)
+
+            # With custom fields
+            request.state.session.from_callback(
+                callback_result.callback_data,
+                custom_fields={
+                    "role": "admin",
+                    "preferences": {"theme": "dark"},
+                    "last_login": 1735689600000
+                }
+            )
+        """
+        ...
+
+    def save(self) -> None:
+        """
+        Mark session for persistence and refresh cookie expiration (rolling sessions).
+
+        This defers the actual cookie write until after the route completes. Call
+        this after modifying session data or to extend the session lifetime for
+        active users (rolling session pattern).
+
+        The session cookie's expiry is refreshed each time save() is called, keeping
+        active users logged in without requiring re-authentication.
+
+        If enable_csrf_protection is True and no CSRF token exists in the session,
+        a new token will be automatically generated and stored.
+
+        Example:
+            # After modifying session data
+            session['last_activity'] = time.time()
+            session.save()
+
+            # Or just extend session for authenticated users (rolling sessions)
+            if session.is_authenticated:
+                session.save()
+        """
+        ...
+
+    def clear(self) -> None:
+        """
+        Delete the session and clear all cookies.
+
+        Resets the session to empty state and marks session cookie for deletion.
+        If enable_csrf_protection is True, also marks CSRF cookie for deletion.
+        Use this when logging out users.
+
+        This operation takes precedence over save() - calling clear() will delete
+        the session even if save() was called earlier in the request.
+
+        Example:
+            @router.get("/logout")
+            async def logout(request: Request):
+                request.state.session.clear()
+                return RedirectResponse("/login")
+        """
+        ...
+
+    # ============================================================================
+    # WRISTBAND FRONTEND SDK INTEGRATION
+    # ============================================================================
+
+    def get_session_response(self, metadata: Optional[Dict[str, Any]] = None) -> SessionResponse:
+        """
+        Create a SessionResponse for Wristband frontend SDKs.
+
+        This method formats session data in the structure expected by Wristband's
+        frontend SDKs for session validation endpoints.
+
+        Args:
+            metadata: Optional custom metadata to include (must be JSON-serializable).
+                     Defaults to empty dict if not provided.
+
+        Returns:
+            SessionResponse containing tenant_id, user_id, and metadata
+
+        Raises:
+            HTTPException: 401 Unauthorized if tenant_id or user_id are missing
+
+        Example:
+            @router.get("/api/v1/session", dependencies=[Depends(require_session_auth)])
+            async def get_session(session: Session = Depends(get_session)) -> SessionResponse:
+                return session.get_session_response(
+                    metadata={
+                        "name": session.get("full_name"),
+                        "role": session.get("role")
+                    }
+                )
+        """
+        ...
+
+    def get_token_response(self) -> TokenResponse:
+        """
+        Create a TokenResponse for Wristband frontend SDKs.
+
+        This method formats token data in the structure expected by Wristband's
+        frontend SDKs for token retrieval endpoints. Use this when your frontend
+        needs to make direct authenticated API calls.
+
+        Returns:
+            TokenResponse containing access_token and expires_at
+
+        Raises:
+            HTTPException: 401 Unauthorized if access_token or expires_at are missing
+
+        Example:
+            @router.get("/api/v1/token", dependencies=[Depends(require_session_auth)])
+            async def get_token(session: Session = Depends(get_session)) -> TokenResponse:
+                return session.get_token_response()
+        """
+        ...
+
+
+########################################
+# DEPENDENCY MODELS
+########################################
+
+
+class JWTAuthResult:
+    """
+    Result of JWT authentication containing the decoded payload and raw token.
+    """
+
+    def __init__(self, jwt: str, payload: JWTPayload):
+        """
+        Initialize JWT auth result.
+
+        Args:
+            jwt: The raw JWT token string
+            payload: Decoded JWT payload with standard and custom claims
+        """
+        self.jwt = jwt
+        self.payload = payload
+
+
+class AuthStrategy(str, Enum):
+    """Available authentication strategies for multi-strategy auth."""
+
+    SESSION = "session"
+    JWT = "jwt"
+
+
+class SessionAuthConfig(TypedDict, total=False):
+    """
+    Configuration for session-based authentication in multi-strategy auth.
+
+    All fields are optional and have defaults.
+    """
+
+    enable_csrf_protection: bool
+    """Enable CSRF token validation. Defaults to False."""
+
+    csrf_header_name: str
+    """Header name containing CSRF token. Defaults to "X-CSRF-Token"."""
+
+
+class JWTAuthConfig(TypedDict, total=False):
+    """
+    Configuration for JWT authentication in multi-strategy auth.
+
+    All fields are optional and have defaults.
+    """
+
+    jwks_cache_max_size: int
+    """Maximum number of JWKs to cache. Defaults to 100."""
+
+    jwks_cache_ttl: int
+    """Time-to-live for cached JWKs in seconds. Defaults to 3600 (1 hour)."""
+
+
+class AuthResult:
+    """
+    Result from multi-strategy authentication containing the strategy used and auth data.
+
+    This wrapper allows you to determine which authentication strategy succeeded
+    and access the appropriate authentication data.
+    """
+
+    def __init__(
+        self, strategy: AuthStrategy, session: Optional[Session] = None, jwt_result: Optional[JWTAuthResult] = None
+    ):
+        """
+        Initialize authentication result.
+
+        Args:
+            strategy: Which authentication strategy succeeded ("SESSION" or "JWT")
+            session: Session object if SESSION strategy succeeded
+            jwt_result: JWTAuthResult if JWT strategy succeeded
+        """
+        self.strategy = strategy
+        self.session = session
+        self.jwt_result = jwt_result

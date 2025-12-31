@@ -1,15 +1,23 @@
 import base64
 import hashlib
 import logging
+import re
 import secrets
 import time
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Literal, Optional, Tuple, cast
+from typing import Any, Awaitable, Callable, List, Literal, Optional, Tuple, cast
 from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
+from wristband.python_jwt import (
+    JWTPayload,
+    JwtValidationResult,
+    WristbandJwtValidator,
+    WristbandJwtValidatorConfig,
+    create_wristband_jwt_validator,
+)
 
 from .client import WristbandApiClient
 from .config_resolver import ConfigResolver
@@ -17,18 +25,26 @@ from .csrf import is_csrf_token_valid
 from .exceptions import InvalidGrantError, WristbandError
 from .models import (
     AuthConfig,
+    AuthResult,
+    AuthStrategy,
     CallbackData,
+    CallbackFailureReason,
     CallbackResult,
     CallbackResultType,
+    CompletedCallbackResult,
+    JWTAuthConfig,
+    JWTAuthResult,
     LoginConfig,
     LoginState,
     LogoutConfig,
     OAuthAuthorizeUrlConfig,
+    RedirectRequiredCallbackResult,
+    Session,
+    SessionAuthConfig,
     TokenData,
     UserInfo,
     WristbandTokenResponse,
 )
-from .session import Session
 from .utils import DataEncryptor
 
 _logger: logging.Logger = logging.getLogger(__name__)
@@ -50,9 +66,11 @@ class WristbandAuth:
     _return_url_char_max_len = 450
     _token_refresh_retries = 2
     _token_refresh_retry_timeout = 0.1  # 100ms
+    _tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
 
     def __init__(self, auth_config: AuthConfig) -> None:
         self._config_resolver = ConfigResolver(auth_config)
+        self._jwt_validator: Optional[WristbandJwtValidator] = None
         self._wristband_api = WristbandApiClient(
             wristband_application_vanity_domain=self._config_resolver.get_wristband_application_vanity_domain(),
             client_id=self._config_resolver.get_client_id(),
@@ -93,13 +111,12 @@ class WristbandAuth:
         - return_url: The URL to redirect the user to after authentication.
         - tenant_custom_domain: The tenant-specific custom domain, if applicable. Used as the domain
           for the Authorize URL when present.
-        - tenant_domain: The tenant's domain name. Used as a subdomain or vanity domain in the
+        - tenant_name: The tenant's name. Used as a subdomain or vanity domain in the
           Authorize URL if not using tenant custom domains.
 
         Args:
             request (Request): The FastAPI request object.
-            config (LoginConfig, optional): Additional configuration for the login request,
-                including default tenant domain and custom state.
+            config (LoginConfig, optional): Additional configuration for the login request.
 
         Returns:
             Response: A FastAPI Response object that redirects the user to the Wristband
@@ -201,7 +218,7 @@ class WristbandAuth:
         - state: The original state value sent during the authorization request, used to validate the response.
         - tenant_custom_domain: The tenant's custom domain, if defined. If a redirect to the Login Endpoint
           is needed, this value should be passed along in the redirect.
-        - tenant_domain: The tenant's domain name. Used when redirecting to the Login Endpoint in setups
+        - tenant_name: The tenant's name. Used when redirecting to the Login Endpoint in setups
           that don't rely on tenant subdomains or custom domains.
 
         Args:
@@ -235,19 +252,19 @@ class WristbandAuth:
         if tenant_custom_domain_param and not isinstance(tenant_custom_domain_param, str):
             raise TypeError("Invalid query parameter [tenant_custom_domain] passed from Wristband during callback")
 
-        # Resolve and validate tenant domain name
+        # Resolve and validate tenant name
         resolved_tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain)
         if not resolved_tenant_name:
             if parse_tenant_from_root_domain:
                 raise WristbandError("missing_tenant_subdomain", "Callback request URL is missing a tenant subdomain")
             else:
-                raise WristbandError("missing_tenant_domain", "Callback request is missing the [tenant_domain] param")
+                raise WristbandError("missing_tenant_name", "Callback request is missing the [tenant_name] param")
 
         # Build the tenant login URL in case we need to redirect
         if parse_tenant_from_root_domain:
-            tenant_login_url: str = login_url.replace("{tenant_domain}", resolved_tenant_name)
+            tenant_login_url: str = self._tenant_placeholder_pattern.sub(resolved_tenant_name, login_url)
         else:
-            tenant_login_url = f"{login_url}?tenant_domain={resolved_tenant_name}"
+            tenant_login_url = f"{login_url}?tenant_name={resolved_tenant_name}"
 
         # If the tenant_custom_domain is set, add that query param
         if tenant_custom_domain_param:
@@ -258,27 +275,32 @@ class WristbandAuth:
         # Retrieve and decrypt the login state cookie
         _, login_state_cookie_val = self._get_login_state_cookie(request)
 
-        # Create a redirect result in the event of any edge cases.
-        redirect_callback_result = CallbackResult(
-            type=CallbackResultType.REDIRECT_REQUIRED,
-            callback_data=None,
-            redirect_url=tenant_login_url,
-        )
-
         # No valid cookie, we cannot verify the request
         if not login_state_cookie_val:
-            return redirect_callback_result
+            return RedirectRequiredCallbackResult(
+                type=CallbackResultType.REDIRECT_REQUIRED,
+                redirect_url=tenant_login_url,
+                reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+            )
 
         login_state: LoginState = self._decrypt_login_state(login_state_cookie_val)
 
         # Validate the state from the cookie matches the incoming state param
         if param_state != login_state.state:
-            return redirect_callback_result
+            return RedirectRequiredCallbackResult(
+                type=CallbackResultType.REDIRECT_REQUIRED,
+                redirect_url=tenant_login_url,
+                reason=CallbackFailureReason.INVALID_LOGIN_STATE,
+            )
 
         if error:
             # If we specifically got a 'login_required' error, go back to the login
             if error.lower() == "login_required":
-                return redirect_callback_result
+                return RedirectRequiredCallbackResult(
+                    type=CallbackResultType.REDIRECT_REQUIRED,
+                    redirect_url=tenant_login_url,
+                    reason=CallbackFailureReason.LOGIN_REQUIRED,
+                )
             # Otherwise raise an exception
             raise WristbandError(error, error_description or "")
 
@@ -301,9 +323,8 @@ class WristbandAuth:
             expires_at = int((time.time() + expires_in) * 1000)
 
             # Return the callback data and result
-            return CallbackResult(
+            return CompletedCallbackResult(
                 type=CallbackResultType.COMPLETED,
-                redirect_url=None,
                 callback_data=CallbackData(
                     access_token=token_response.access_token,
                     id_token=token_response.id_token,
@@ -318,7 +339,11 @@ class WristbandAuth:
                 ),
             )
         except InvalidGrantError:
-            return redirect_callback_result
+            return RedirectRequiredCallbackResult(
+                type=CallbackResultType.REDIRECT_REQUIRED,
+                redirect_url=tenant_login_url,
+                reason=CallbackFailureReason.INVALID_GRANT,
+            )
         except Exception as ex:
             raise ex
 
@@ -370,7 +395,7 @@ class WristbandAuth:
         Args:
             request (Request): The FastAPI request object containing user session or token data.
             config (LogoutConfig, optional): Optional configuration parameters for the logout process,
-            such as a custom return URL or tenant domain.
+            such as a custom return URL or tenant name.
 
         Returns:
             Response: A FastAPI redirect response to Wristband's Logout Endpoint.
@@ -414,7 +439,7 @@ class WristbandAuth:
             res.headers["Location"] = f"https://{config.tenant_custom_domain}{logout_path}"
             return res
 
-        # 2) If the LogoutConfig has a tenant domain defined, then use that.
+        # 2) If the LogoutConfig has a tenant name defined, then use that.
         if config.tenant_name and config.tenant_name.strip():
             res.headers["Location"] = (
                 f"https://{config.tenant_name}{separator}{wristband_application_vanity_domain}{logout_path}"
@@ -426,8 +451,8 @@ class WristbandAuth:
             res.headers["Location"] = f"https://{tenant_custom_domain}{logout_path}"
             return res
 
-        # 4a) If tenant subdomains are enabled, get the tenant domain from the host.
-        # 4b) Otherwise, if tenant subdomains are not enabled, then look for it in the tenant_domain query param.
+        # 4a) If tenant subdomains are enabled, get the tenant name from the host.
+        # 4b) Otherwise, if tenant subdomains are not enabled, then look for it in the tenant_name query param.
         if tenant_name and tenant_name.strip():
             res.headers["Location"] = (
                 f"https://{tenant_name}{separator}{wristband_application_vanity_domain}{logout_path}"
@@ -520,53 +545,206 @@ class WristbandAuth:
 
     def create_session_auth_dependency(
         self,
-        csrf_header_name: str = "X-CSRF-TOKEN"
-    ) -> Callable[[Request, Response], Awaitable[Session]]:
+        enable_csrf_protection: bool = False,
+        csrf_header_name: str = "X-CSRF-TOKEN",
+    ) -> Callable[[Request], Awaitable[Session]]:
         """
         Creates a session authentication dependency for this WristbandAuth instance.
 
         Args:
-            csrf_header_name: The HTTP header name to read the CSRF token from (default: "X-CSRF-TOKEN")
+            enable_csrf_protection: Whether to validate CSRF tokens (default: False)
+            csrf_header_name: The HTTP header name to read the CSRF token from, if enabled (default: "X-CSRF-TOKEN")
 
         Returns:
             An async dependency function for FastAPI route protection.
+
+        Raises:
+            RuntimeError: If SessionMiddleware is not registered in the application.
+            HTTPException: 401 if the session is not authenticated or token refresh fails.
+            HTTPException: 403 if CSRF validation fails (when enable_csrf_protection is True).
+
+        Example:
+            ```python
+            session_auth = wristband_auth.create_session_auth_dependency(
+                enable_csrf_protection=True,
+                csrf_header_name="X-CSRF-TOKEN"
+            )
+
+            @app.get("/protected")
+            async def protected_route(session: Session = Depends(session_auth)):
+                return { "user_id": session.user_id }
+            ```
         """
 
-        async def require_session_auth(request: Request, response: Response) -> Session:
+        async def require_session_auth(request: Request) -> Session:
             """Session authentication dependency for routes."""
             _logger.debug(f"Executing session auth for: {request.method} {request.url.path}...")
-
-            if not hasattr(request.state, "session"):
-                raise RuntimeError("Session not found. Ensure SessionMiddleware is registered in your app.")
-
-            if not request.state.session.is_authenticated:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-
-            if not is_csrf_token_valid(request, csrf_header_name):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-
-            try:
-                refresh_token = request.state.session.refresh_token
-                expires_at = request.state.session.expires_at
-                new_token_data: Optional[TokenData] = await self.refresh_token_if_expired(refresh_token, expires_at)
-                if new_token_data:
-                    request.state.session.access_token = new_token_data.access_token
-                    request.state.session.refresh_token = new_token_data.refresh_token
-                    request.state.session.expires_at = new_token_data.expires_at
-
-                # Always update the cookies for rolling sessions
-                request.state.session.save()
-                return cast(Session, request.state.session)
-
-            except Exception as e:
-                _logger.exception(f"Session auth error during token refresh: {str(e)}")
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+            return await self._validate_session_auth(request, enable_csrf_protection, csrf_header_name)
 
         return require_session_auth
 
-    #################################
+    #####################################################
+    #  JWT AUTH DEPENDENCY
+    #####################################################
+
+    def create_jwt_auth_dependency(
+        self, jwks_cache_max_size: Optional[int] = None, jwks_cache_ttl: Optional[int] = None
+    ) -> Callable[[Request], Awaitable[JWTAuthResult]]:
+        """
+        Creates a JWT authentication dependency for FastAPI routes.
+
+        This dependency validates Bearer tokens in the Authorization header using
+        Wristband's JWKS endpoint. The JWT validator is lazily initialized on the
+        first request and cached for the lifetime of the application.
+
+        Args:
+            jwks_cache_max_size: Maximum number of JWKS to cache. Defaults to 20 if not specified.
+            jwks_cache_ttl: Time-to-live for cached JWKS in milliseconds.
+                           Defaults to 3600000 (1 hour) if not specified.
+
+        Returns:
+            A callable dependency that returns a JWTAuthResult containing the decoded
+            payload and raw token string.
+
+        Raises:
+            HTTPException: 401 if the token is missing, malformed, invalid, or expired.
+
+        Example:
+            ```python
+            require_jwt_auth = wristband_auth.create_jwt_auth_dependency()
+
+            @app.get("/protected")
+            async def protected_route(auth: JWTAuthResult = Depends(require_jwt_auth)):
+                user_id = auth.payload.sub
+                raw_token = auth.jwt
+                return { "user_id": user_id }
+            ```
+        """
+        # Capture config in closure
+        cache_max_size = jwks_cache_max_size
+        cache_ttl = jwks_cache_ttl
+
+        async def require_jwt_auth(request: Request) -> JWTAuthResult:
+            _logger.debug(f"Executing JWT auth for: {request.method} {request.url.path}...")
+            return await self._validate_jwt_auth(request, cache_max_size, cache_ttl)
+
+        return require_jwt_auth
+
+    #####################################################
+    #  MULTI-STRATEGY AUTH DEPENDENCY
+    #####################################################
+
+    def create_auth_dependency(
+        self,
+        strategies: List[AuthStrategy],
+        session_config: Optional[SessionAuthConfig] = None,
+        jwt_config: Optional[JWTAuthConfig] = None,
+    ) -> Callable[[Request], Awaitable[AuthResult]]:
+        """
+        Creates a multi-strategy authentication dependency that tries strategies in order.
+
+        Tries each strategy sequentially until one succeeds. Use this when you need
+        to support multiple authentication methods (e.g., sessions for web apps and
+        JWT tokens for API clients or automated testing).
+
+        Args:
+            strategies: List of auth strategies to try in order (e.g., [AuthStrategy.SESSION, AuthStrategy.JWT])
+            session_config: Configuration for session authentication (optional, only used with AuthStrategy.SESSION)
+            jwt_config: Configuration for JWT authentication (optional, only used with AuthStrategy.JWT)
+
+        Returns:
+            A callable dependency that returns AuthResult indicating which strategy succeeded
+            and containing the appropriate authentication data.
+
+        Raises:
+            ValueError: If strategies list is empty, contains invalid strategies, or contains
+                        invalid strategy-specific configuration values.
+            HTTPException: 401 if all strategies fail to authenticate
+
+        Example:
+            ```python
+                    from wristband.fastapi_auth import AuthStrategy, SessionAuthConfig, JWTAuthConfig
+
+                    # Try SESSION first, fall back to JWT for API clients
+                    require_auth = wristband_auth.create_auth_dependency(
+                        strategies=[AuthStrategy.SESSION, AuthStrategy.JWT],
+                        session_config=SessionAuthConfig(
+                            enable_csrf_protection=True,
+                            csrf_header_name="X-CSRF-TOKEN"
+                        ),
+                        jwt_config=JWTAuthConfig(
+                            jwks_cache_max_size=50
+                        )
+                    )
+
+                    @app.get("/protected")
+                    async def protected(auth: AuthResult = Depends(require_auth)):
+                        # Handle different auth strategies
+                        if auth.strategy == AuthStrategy.SESSION:
+                            user_id = auth.session.user_id
+                        elif auth.strategy == AuthStrategy.JWT:
+                            user_id = auth.jwt_result.payload.sub
+
+                        return {"user_id": user_id, "auth_method": auth.strategy.value}
+            ```
+        """
+        # Validate that at least one strategy is provided
+        if not strategies:
+            raise ValueError("At least one authentication strategy must be provided")
+
+        # Validate no duplicates
+        if len(strategies) != len(set(strategies)):
+            raise ValueError("Duplicate authentication strategies are not allowed")
+
+        # Runtime validation: ensure all strategies are AuthStrategy enum members
+        # Run here during dependency creation instead of on every request.
+        for strategy in strategies:
+            if not isinstance(strategy, AuthStrategy):
+                raise ValueError(f"Invalid authentication strategy: {strategy}.")
+
+        async def require_auth(request: Request) -> AuthResult:
+            """Multi-strategy authentication dependency."""
+            _logger.debug(f"Executing multi-strategy auth for: {request.method} {request.url.path}...")
+
+            last_exception: Optional[Exception] = None
+
+            # Try each strategy in the order specified
+            for strategy in strategies:
+                try:
+                    if strategy == AuthStrategy.SESSION:
+                        _logger.debug("Trying SESSION authentication...")
+                        enable_csrf = (session_config or {}).get("enable_csrf_protection", False)
+                        csrf_header = (session_config or {}).get("csrf_header_name", "X-CSRF-TOKEN")
+                        session = await self._validate_session_auth(request, enable_csrf, csrf_header)
+                        return AuthResult(strategy=AuthStrategy.SESSION, session=session)
+
+                    elif strategy == AuthStrategy.JWT:
+                        _logger.debug("Trying JWT authentication...")
+                        jwks_cache_max_size = (jwt_config or {}).get("jwks_cache_max_size")
+                        jwks_cache_ttl = (jwt_config or {}).get("jwks_cache_ttl")
+                        jwt_result = await self._validate_jwt_auth(request, jwks_cache_max_size, jwks_cache_ttl)
+                        return AuthResult(strategy=AuthStrategy.JWT, jwt_result=jwt_result)
+
+                except HTTPException as e:
+                    # This strategy failed with an HTTP error, try the next strategy
+                    _logger.debug(f"{strategy.value} authentication failed with status {e.status_code}")
+                    last_exception = e
+                    continue
+                except Exception as e:
+                    # This strategy failed with an unexpected error, try the next strategy
+                    _logger.debug(f"{strategy.value} authentication failed with error: {e}")
+                    last_exception = e
+                    continue
+
+            # All strategies failed - raise the last exception
+            _logger.debug("All authentication strategies failed")
+            raise last_exception  # type: ignore[misc]
+
+        return require_auth
+
+    #####################################################
     #  HELPER METHODS
-    #################################
+    #####################################################
 
     def _resolve_tenant_custom_domain_param(self, request: Request) -> str:
         tenant_custom_domain_param = request.query_params.getlist("tenant_custom_domain")
@@ -580,17 +758,28 @@ class WristbandAuth:
         if parse_tenant_from_root_domain and parse_tenant_from_root_domain.strip():
             host = str(request.url.netloc)
 
-            if not host.endswith(parse_tenant_from_root_domain):
+            # Strip off the port if it exists
+            hostname = host.split(":")[0]
+
+            # Extract everything after the first dot
+            if "." not in hostname:
                 return ""
 
-            subdomain: str = host[: -len(parse_tenant_from_root_domain)].rstrip(".")
+            root_domain = hostname[hostname.index(".") + 1 :]
+
+            # Check if the root domain matches
+            if root_domain != parse_tenant_from_root_domain:
+                return ""
+
+            # Extract subdomain (everything before the first dot)
+            subdomain: str = hostname[: hostname.index(".")]
             return subdomain or ""
 
-        tenant_domain_param_list = request.query_params.getlist("tenant_domain")
-        if len(tenant_domain_param_list) > 1:
-            raise TypeError("More than one [tenant_domain] query parameter was encountered")
+        tenant_name_param_list = request.query_params.getlist("tenant_name")
+        if len(tenant_name_param_list) > 1:
+            raise TypeError("More than one [tenant_name] query parameter was encountered")
 
-        return tenant_domain_param_list[0] if tenant_domain_param_list else ""
+        return tenant_name_param_list[0] if tenant_name_param_list else ""
 
     def _resolve_return_url(self, request: Request, return_url: Optional[str] = None) -> Optional[str]:
         """Resolve return URL source (if any) and validate length"""
@@ -716,9 +905,9 @@ class WristbandAuth:
         # Domain priority order resolution:
         # 1)  tenant_custom_domain query param
         # 2a) tenant subdomain
-        # 2b) tenant_domain query param
-        # 3)  defaultTenantCustomDomain login config
-        # 4)  defaultTenantDomainName login config
+        # 2b) tenant_name query param
+        # 3)  default_tenant_custom_domain login config
+        # 4)  default_tenant_name login config
         if config.tenant_custom_domain:
             return f"https://{config.tenant_custom_domain}{path_and_query}"
         if config.tenant_name:
@@ -730,7 +919,7 @@ class WristbandAuth:
         if config.default_tenant_custom_domain:
             return f"https://{config.default_tenant_custom_domain}{path_and_query}"
 
-        # By this point, we know the tenant domain name has already resolved properly, so just return the default.
+        # By this point, we know the tenant name has already resolved properly, so just return the default.
         return (
             f"https://{config.default_tenant_name}"
             f"{separator}{config.wristband_application_vanity_domain}"
@@ -763,3 +952,129 @@ class WristbandAuth:
     def _decrypt_login_state(self, login_state_cookie: str) -> LoginState:
         login_state_dict = self._login_state_encryptor.decrypt(login_state_cookie)
         return LoginState(**login_state_dict)
+
+    def _get_jwt_validator(
+        self, jwks_cache_max_size: Optional[int], jwks_cache_ttl: Optional[int]
+    ) -> WristbandJwtValidator:
+        """
+        Lazy initialize and cache the JWT validator.
+
+        The validator is created once on the first request and reused for all
+        subsequent requests. Configuration is captured at dependency creation time.
+
+        Args:
+            jwks_cache_max_size: Maximum JWKS cache size (passed to validator config)
+            jwks_cache_ttl: JWKS cache TTL in milliseconds (passed to validator config)
+
+        Returns:
+            The cached WristbandJwtValidator instance
+        """
+        if self._jwt_validator is None:
+            config = WristbandJwtValidatorConfig(
+                wristband_application_vanity_domain=self._config_resolver.get_wristband_application_vanity_domain(),
+                jwks_cache_max_size=jwks_cache_max_size,
+                jwks_cache_ttl=jwks_cache_ttl,
+            )
+            self._jwt_validator = create_wristband_jwt_validator(config)
+
+        return self._jwt_validator
+
+    async def _validate_session_auth(
+        self, request: Request, enable_csrf_protection: bool, csrf_header_name: str
+    ) -> Session:
+        """
+        Shared session validation logic used by both single and multi-strategy auth.
+
+        Validates the session exists, is authenticated, passes CSRF checks (if enabled),
+        and automatically refreshes expired access tokens.
+
+        Args:
+            request: The FastAPI request object
+            enable_csrf_protection: Whether to validate CSRF tokens
+            csrf_header_name: Name of the CSRF token header
+
+        Returns:
+            The validated and refreshed Session object
+
+        Raises:
+            RuntimeError: If SessionMiddleware is not registered
+            HTTPException: 401 if not authenticated or token refresh fails
+            HTTPException: 403 if CSRF validation fails
+        """
+        # Ensure SessionMiddleware has attached a session to request.state
+        if not hasattr(request.state, "session"):
+            raise RuntimeError("Session not found. Ensure SessionMiddleware is registered in your app.")
+
+        # Check if the session contains an authenticated user
+        if not request.state.session.is_authenticated:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+        # Validate CSRF token if protection is enabled
+        if enable_csrf_protection and not is_csrf_token_valid(request, csrf_header_name):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+        refresh_token = request.state.session.refresh_token
+        expires_at = request.state.session.expires_at
+        if refresh_token is not None and expires_at is not None:
+            try:
+                # Attempt to refresh the access token if it has expired
+                new_token_data: Optional[TokenData] = await self.refresh_token_if_expired(refresh_token, expires_at)
+
+                # Update session with new tokens if refresh occurred
+                if new_token_data:
+                    request.state.session.access_token = new_token_data.access_token
+                    request.state.session.refresh_token = new_token_data.refresh_token
+                    request.state.session.expires_at = new_token_data.expires_at
+
+            except Exception as e:
+                # Log the error and return 401 for any token refresh failures
+                _logger.exception(f"Session auth error during token refresh: {str(e)}")
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+        # Always save the session to update cookies (rolling session expiration)
+        request.state.session.save()
+        return cast(Session, request.state.session)
+
+    async def _validate_jwt_auth(
+        self, request: Request, jwks_cache_max_size: Optional[int], jwks_cache_ttl: Optional[int]
+    ) -> JWTAuthResult:
+        """
+        Shared JWT validation logic used by both single and multi-strategy auth.
+
+        Validates Bearer tokens from the Authorization header using Wristband's JWKS endpoint.
+
+        Args:
+            request: The FastAPI request object
+            jwks_cache_max_size: Maximum number of JWKS to cache
+            jwks_cache_ttl: Time-to-live for cached JWKS in milliseconds
+
+        Returns:
+            JWTAuthResult containing the decoded payload and raw token
+
+        Raises:
+            HTTPException: 401 if token is missing, invalid, or expired
+        """
+        # Get or lazily initialize the JWT validator (cached forever)
+        jwt_validator = self._get_jwt_validator(jwks_cache_max_size, jwks_cache_ttl)
+
+        # Extract the Authorization header
+        auth_header = request.headers.get("authorization")
+        if not auth_header:
+            _logger.debug("JWT auth failed: Missing Authorization header")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+        # Extract the Bearer token from the header
+        token = jwt_validator.extract_bearer_token(auth_header)
+        if not token:
+            _logger.debug("JWT auth failed: Invalid Authorization header format. Expected 'Bearer <token>'")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+        # Validate the JWT token
+        result: JwtValidationResult = jwt_validator.validate(token)
+        if not result.is_valid:
+            _logger.debug("JWT auth failed: Invalid or expired token")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+        # Return the decoded payload and raw token wrapped in JWTAuthResult
+        payload = cast(JWTPayload, result.payload)
+        return JWTAuthResult(jwt=token, payload=payload)

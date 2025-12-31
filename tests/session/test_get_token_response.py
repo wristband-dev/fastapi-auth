@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from wristband.fastapi_auth import TokenResponse
+from wristband.fastapi_auth.models import SameSiteOption
 from wristband.fastapi_auth.session import Session, SessionManager
 from wristband.fastapi_auth.utils import DataEncryptor
 
@@ -21,8 +22,9 @@ class TestSessionGetTokenResponse:
             csrf_cookie_domain=None,
             max_age=3600,
             path="/",
-            same_site="lax",
+            same_site=SameSiteOption.LAX,
             secure=True,
+            enable_csrf_protection=False,
         )
 
     def test_get_token_response_returns_correct_data(self, session: Session) -> None:

@@ -1,8 +1,8 @@
 import base64
 import json
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, List, Union, cast
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 from .models import RawUserInfo, UserInfo
 
@@ -50,33 +50,57 @@ class DataEncryptor:
     This class is designed to securely encrypt data dictionaries into strings suitable
     for storage in cookies and to decrypt those strings back into dictionaries.
 
-    The encryption key is derived from a secret key string supplied at initialization.
-    The secret key must be at least 32 characters to ensure sufficient entropy.
+    Supports key rotation by accepting multiple keys. The first key is used for
+    encryption, while all keys are tried for decryption (allowing old sessions
+    to remain valid during key rotation).
+
+    The secret key(s) must be at least 32 characters to ensure sufficient entropy.
     """
 
-    def __init__(self, secret_key: Optional[str] = None) -> None:
+    cipher: Union[Fernet, MultiFernet]
+
+    def __init__(self, secret_key: Union[str, List[str]]) -> None:
         """
-        Initialize the DataEncryptor with a secret key.
+        Initialize the DataEncryptor with secret key(s).
 
         Args:
-            secret_key (str): A secret string of at least 32 characters used to derive the encryption key.
+            secret_key: A secret string or list of strings, each at least 32 characters.
+                       If a list, the first key encrypts, all keys can decrypt (key rotation).
 
         Raises:
-            ValueError: If no secret_key is provided or if its length is less than 32 characters.
+            ValueError: If no secret_key is provided, if any key is less than 32 characters,
+                       or if the list is empty.
         """
-        if not secret_key:
-            raise ValueError("Data Encryptor: secret_key is required")
-        if len(secret_key) < 32:
-            raise ValueError("Data Encryptor: secret_key must be at least 32 characters long")
+        # Handle single key or list of keys
+        keys = [secret_key] if isinstance(secret_key, str) else secret_key
 
-        # Convert string to proper Fernet key format (base64 urlsafe-encoded 32 bytes)
-        key_bytes: bytes = secret_key.encode("utf-8")[:32].ljust(32, b"\0")  # truncate to 32 bytes if longer
-        self.secret_key: bytes = base64.urlsafe_b64encode(key_bytes)
-        self.cipher: Fernet = Fernet(self.secret_key)
+        if not keys:
+            raise ValueError("Data Encryptor: secret_key is required")
+
+        # Validate and convert all keys to Fernet format
+        fernet_keys: List[Fernet] = []
+        for i, key in enumerate(keys):
+            if not key:
+                raise ValueError(f"Data Encryptor: secret_key at index {i} cannot be empty")
+            if len(key) < 32:
+                raise ValueError(f"Data Encryptor: secret_key at index {i} must be at least 32 characters long")
+
+            # Convert string to proper Fernet key format (base64 urlsafe-encoded 32 bytes)
+            key_bytes: bytes = key.encode("utf-8")[:32].ljust(32, b"\0")  # truncate to 32 bytes if longer
+            fernet_key: bytes = base64.urlsafe_b64encode(key_bytes)
+            fernet_keys.append(Fernet(fernet_key))
+
+        # Use MultiFernet if multiple keys, otherwise single Fernet
+        if len(fernet_keys) > 1:
+            self.cipher = MultiFernet(fernet_keys)
+        else:
+            self.cipher = fernet_keys[0]
 
     def encrypt(self, data: Dict[str, Any]) -> str:
         """
         Encrypt a dictionary of data into a base64-encoded string.
+
+        Uses the first key for encryption.
 
         Args:
             data (dict): The data dictionary to encrypt.
@@ -98,6 +122,8 @@ class DataEncryptor:
         """
         Decrypt an encrypted string back into a dictionary.
 
+        Tries all configured keys for decryption (supports key rotation).
+
         Args:
             encrypted_str (str): The encrypted string to decrypt.
 
@@ -106,7 +132,7 @@ class DataEncryptor:
 
         Raises:
             ValueError: If the input string is empty.
-            cryptography.fernet.InvalidToken: If decryption fails due to an invalid token.
+            cryptography.fernet.InvalidToken: If decryption fails with all keys.
             json.JSONDecodeError: If decrypted data is not valid JSON.
         """
         if not encrypted_str:

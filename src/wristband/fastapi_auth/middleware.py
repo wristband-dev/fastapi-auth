@@ -1,14 +1,14 @@
 import logging
-from typing import Any, Awaitable, Callable, Literal, Optional
+from typing import Any, Awaitable, Callable, List, Optional, Union
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from .models import SameSiteOption
 from .session import SessionManager
 from .utils import DataEncryptor
 
 logger = logging.getLogger(__name__)
-SameSiteOptions = Literal["lax", "strict", "none"]
 
 
 class SessionMiddleware(BaseHTTPMiddleware):
@@ -20,12 +20,13 @@ class SessionMiddleware(BaseHTTPMiddleware):
         secret_key: Secret key for session encryption (required)
         session_cookie_name: Name of the session cookie (default: "session")
         session_cookie_domain: Domain for session cookie (default: None)
-        csrf_cookie_name: Name of CSRF cookie (default: "CSRF-TOKEN")
-        csrf_cookie_domain: Domain for CSRF cookie (default: None)
         max_age: Cookie expiration time in seconds (default: 3600)
         path: Cookie path (default: "/")
-        same_site: Cookie SameSite attribute (default: "lax")
+        same_site: Cookie SameSite attribute (default: SameSiteOption.LAX)
         secure: Whether to use secure cookies (default: True)
+        enable_csrf_protection: Enable CSRF token generation and validation (default: False)
+        csrf_cookie_name: Name of CSRF cookie (default: "CSRF-TOKEN")
+        csrf_cookie_domain: Domain for CSRF cookie (default: None)
 
     Usage:
         app.add_middleware(
@@ -34,7 +35,7 @@ class SessionMiddleware(BaseHTTPMiddleware):
             secret_key="your-secret-key-here",
             max_age=3600,
             path="/",
-            same_site="lax",
+            same_site=SameSiteOption.LAX,
             secure=True,
         )
 
@@ -53,22 +54,24 @@ class SessionMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: Any,
-        secret_key: str,
+        secret_key: Union[str, List[str]],
         session_cookie_name: str = "session",
         session_cookie_domain: Optional[str] = None,
-        csrf_cookie_name: str = "CSRF-TOKEN",
-        csrf_cookie_domain: Optional[str] = None,
         max_age: int = 3600,  # 1 hour
         path: str = "/",
-        same_site: Literal["lax", "strict", "none"] = "lax",
+        same_site: SameSiteOption = SameSiteOption.LAX,
         secure: bool = True,
+        enable_csrf_protection: bool = False,
+        csrf_cookie_name: str = "CSRF-TOKEN",
+        csrf_cookie_domain: Optional[str] = None,
     ) -> None:
         super().__init__(app)
 
-        if not secret_key or not secret_key.strip():
+        # Basic validation (DataEncryptor will do full validation)
+        keys = [secret_key] if isinstance(secret_key, str) else secret_key
+        if not keys:
             raise ValueError("secret_key is required for session encryption")
-        if len(secret_key) < 32:
-            raise ValueError("secret_key must be at least 32 characters long for security")
+
         if not session_cookie_name or not session_cookie_name.strip():
             raise ValueError("session_cookie_name cannot be empty")
         if not csrf_cookie_name or not csrf_cookie_name.strip():
@@ -81,24 +84,26 @@ class SessionMiddleware(BaseHTTPMiddleware):
         self._encryptor = DataEncryptor(secret_key)
         self._session_cookie_name = session_cookie_name
         self._session_cookie_domain = session_cookie_domain
-        self._csrf_cookie_name = csrf_cookie_name
-        self._csrf_cookie_domain = csrf_cookie_domain or session_cookie_domain
         self._max_age = max_age
         self._path = path
-        self._same_site: SameSiteOptions = same_site
+        self._same_site: SameSiteOption = same_site
         self._secure = secure
+        self._enable_csrf_protection = enable_csrf_protection
+        self._csrf_cookie_name = csrf_cookie_name
+        self._csrf_cookie_domain = csrf_cookie_domain or session_cookie_domain
 
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         session = SessionManager(
             encryptor=self._encryptor,
             session_cookie_name=self._session_cookie_name,
             session_cookie_domain=self._session_cookie_domain,
-            csrf_cookie_name=self._csrf_cookie_name,
-            csrf_cookie_domain=self._csrf_cookie_domain,
             max_age=self._max_age,
             path=self._path,
             same_site=self._same_site,
             secure=self._secure,
+            enable_csrf_protection=self._enable_csrf_protection,
+            csrf_cookie_name=self._csrf_cookie_name,
+            csrf_cookie_domain=self._csrf_cookie_domain,
         )
 
         # Try to load existing session
