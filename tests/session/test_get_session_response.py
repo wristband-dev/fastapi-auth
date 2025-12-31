@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from wristband.fastapi_auth import SessionResponse
+from wristband.fastapi_auth.models import SameSiteOption
 from wristband.fastapi_auth.session import Session, SessionManager
 from wristband.fastapi_auth.utils import DataEncryptor
 
@@ -21,8 +22,9 @@ class TestSessionGetSessionResponse:
             csrf_cookie_domain=None,
             max_age=3600,
             path="/",
-            same_site="lax",
+            same_site=SameSiteOption.LAX,
             secure=True,
+            enable_csrf_protection=False,
         )
 
     def test_get_session_response_with_no_metadata(self, session: Session) -> None:

@@ -1,10 +1,10 @@
-from typing import Literal
 from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import Request, Response
 
 from wristband.fastapi_auth import CallbackData, SessionMiddleware, UserInfo
+from wristband.fastapi_auth.models import SameSiteOption
 from wristband.fastapi_auth.session import SessionManager
 from wristband.fastapi_auth.utils import DataEncryptor
 
@@ -62,17 +62,25 @@ class TestSessionMiddlewareInitialization:
         assert middleware._session_cookie_name == "session"
         assert middleware._max_age == 3600
 
-    def test_init_raises_when_secret_key_empty(self):
-        with pytest.raises(ValueError, match="secret_key is required"):
+    def test_init_raises_when_secret_key_empty_string(self):
+        with pytest.raises(ValueError, match="secret_key at index 0 cannot be empty"):
             SessionMiddleware(app=Mock(), secret_key="")
 
-    def test_init_raises_when_secret_key_whitespace(self):
+    def test_init_raises_when_secret_key_empty_list(self):
         with pytest.raises(ValueError, match="secret_key is required"):
+            SessionMiddleware(app=Mock(), secret_key=[])
+
+    def test_init_raises_when_secret_key_whitespace(self):
+        with pytest.raises(ValueError, match="at least 32 characters"):
             SessionMiddleware(app=Mock(), secret_key="   ")
 
     def test_init_raises_when_secret_key_too_short(self):
         with pytest.raises(ValueError, match="at least 32 characters"):
             SessionMiddleware(app=Mock(), secret_key="short")
+
+    def test_init_raises_when_key_in_list_too_short(self):
+        with pytest.raises(ValueError, match="at least 32 characters"):
+            SessionMiddleware(app=Mock(), secret_key=["a" * 32, "short"])
 
     def test_init_with_exactly_32_chars(self):
         middleware = SessionMiddleware(app=Mock(), secret_key="a" * 32)
@@ -80,6 +88,10 @@ class TestSessionMiddlewareInitialization:
 
     def test_init_with_long_secret_key(self):
         middleware = SessionMiddleware(app=Mock(), secret_key="a" * 256)
+        assert middleware._encryptor is not None
+
+    def test_init_with_multiple_keys(self):
+        middleware = SessionMiddleware(app=Mock(), secret_key=["a" * 32, "b" * 32, "c" * 32])
         assert middleware._encryptor is not None
 
     def test_init_raises_when_session_cookie_name_empty(self):
@@ -121,8 +133,9 @@ class TestSessionMiddlewareInitialization:
         assert middleware._csrf_cookie_name == "CSRF-TOKEN"
         assert middleware._max_age == 3600
         assert middleware._path == "/"
-        assert middleware._same_site == "lax"
+        assert middleware._same_site == SameSiteOption.LAX
         assert middleware._secure is True
+        assert middleware._enable_csrf_protection is False
 
     def test_init_csrf_domain_inherits_from_session_domain(self):
         middleware = SessionMiddleware(app=Mock(), secret_key="a" * 32, session_cookie_domain=".example.com")
@@ -141,10 +154,18 @@ class TestSessionMiddlewareInitialization:
         assert middleware._csrf_cookie_domain == ".csrf.example.com"
 
     def test_init_with_all_same_site_options(self):
-        same_site_values: list[Literal["lax", "strict", "none"]] = ["lax", "strict", "none"]
+        same_site_values = [SameSiteOption.LAX, SameSiteOption.STRICT, SameSiteOption.NONE]
         for same_site in same_site_values:
             middleware = SessionMiddleware(app=Mock(), secret_key="a" * 32, same_site=same_site)
             assert middleware._same_site == same_site
+
+    def test_init_with_csrf_protection_enabled(self):
+        middleware = SessionMiddleware(app=Mock(), secret_key="a" * 32, enable_csrf_protection=True)
+        assert middleware._enable_csrf_protection is True
+
+    def test_init_with_custom_csrf_cookie_name(self):
+        middleware = SessionMiddleware(app=Mock(), secret_key="a" * 32, csrf_cookie_name="X-CSRF-TOKEN")
+        assert middleware._csrf_cookie_name == "X-CSRF-TOKEN"
 
 
 class TestSessionMiddlewareDispatch:
@@ -425,8 +446,8 @@ class TestSessionCookieOperations:
         assert "Secure" in session_cookie
 
     @pytest.mark.asyncio
-    async def test_csrf_cookie_written_alongside_session(self, secret_key, callback_data):
-        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key)
+    async def test_csrf_cookie_not_written_when_protection_disabled(self, secret_key, callback_data):
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key, enable_csrf_protection=False)
         request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
 
         async def call_next(req):
@@ -436,7 +457,22 @@ class TestSessionCookieOperations:
         response = await middleware.dispatch(request, call_next)
 
         cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        has_csrf_cookie = any("CSRF-TOKEN=" in h for h in cookie_headers)
 
+        assert not has_csrf_cookie
+
+    @pytest.mark.asyncio
+    async def test_csrf_cookie_written_when_protection_enabled(self, secret_key, callback_data):
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key, enable_csrf_protection=True)
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session.from_callback(callback_data)
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
         has_session_cookie = any("session=" in h for h in cookie_headers)
         has_csrf_cookie = any("CSRF-TOKEN=" in h for h in cookie_headers)
 
@@ -444,10 +480,61 @@ class TestSessionCookieOperations:
         assert has_csrf_cookie
 
     @pytest.mark.asyncio
+    async def test_csrf_cookie_respects_all_attributes(self, secret_key, callback_data):
+        middleware = SessionMiddleware(
+            app=Mock(),
+            secret_key=secret_key,
+            enable_csrf_protection=True,
+            path="/api",
+            max_age=7200,
+            same_site=SameSiteOption.STRICT,
+            secure=False,
+        )
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session.from_callback(callback_data)
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        csrf_cookie = next((h for h in cookie_headers if "CSRF-TOKEN=" in h), None)
+
+        assert csrf_cookie is not None
+        assert "Path=/api" in csrf_cookie
+        assert "Max-Age=7200" in csrf_cookie
+        assert "SameSite=strict" in csrf_cookie
+        assert "Secure" not in csrf_cookie
+
+    @pytest.mark.asyncio
+    async def test_csrf_cookie_with_same_site_none(self, secret_key, callback_data):
+        middleware = SessionMiddleware(
+            app=Mock(),
+            secret_key=secret_key,
+            enable_csrf_protection=True,
+            same_site=SameSiteOption.NONE,
+        )
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session.from_callback(callback_data)
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        csrf_cookie = next((h for h in cookie_headers if "CSRF-TOKEN=" in h), None)
+
+        assert csrf_cookie is not None
+        assert "SameSite=none" in csrf_cookie
+
+    @pytest.mark.asyncio
     async def test_cookies_respect_custom_domains(self, secret_key, callback_data):
         middleware = SessionMiddleware(
             app=Mock(),
             secret_key=secret_key,
+            enable_csrf_protection=True,
             session_cookie_domain=".example.com",
             csrf_cookie_domain=".csrf.example.com",
         )
@@ -467,6 +554,30 @@ class TestSessionCookieOperations:
         assert csrf_cookie is not None
         assert "Domain=.example.com" in session_cookie
         assert "Domain=.csrf.example.com" in csrf_cookie
+
+    @pytest.mark.asyncio
+    async def test_session_cookie_respects_custom_domain_without_csrf(self, secret_key, callback_data):
+        middleware = SessionMiddleware(
+            app=Mock(),
+            secret_key=secret_key,
+            enable_csrf_protection=False,
+            session_cookie_domain=".example.com",
+        )
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session.from_callback(callback_data)
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        session_cookie = next((h for h in cookie_headers if "session=" in h), None)
+        csrf_cookie = next((h for h in cookie_headers if "CSRF-TOKEN=" in h), None)
+
+        assert session_cookie is not None
+        assert csrf_cookie is None
+        assert "Domain=.example.com" in session_cookie
 
     @pytest.mark.asyncio
     async def test_cookies_respect_custom_path(self, secret_key, callback_data):
@@ -515,7 +626,7 @@ class TestSessionCookieOperations:
         middleware = SessionMiddleware(
             app=Mock(),
             secret_key=secret_key,
-            same_site="strict",
+            same_site=SameSiteOption.STRICT,
         )
         request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
 
@@ -530,6 +641,27 @@ class TestSessionCookieOperations:
 
         assert session_cookie is not None
         assert "SameSite=strict" in session_cookie
+
+    @pytest.mark.asyncio
+    async def test_cookies_respect_same_site_none(self, secret_key, callback_data):
+        middleware = SessionMiddleware(
+            app=Mock(),
+            secret_key=secret_key,
+            same_site=SameSiteOption.NONE,
+        )
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session.from_callback(callback_data)
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        session_cookie = next((h for h in cookie_headers if "session=" in h), None)
+
+        assert session_cookie is not None
+        assert "SameSite=none" in session_cookie
 
     @pytest.mark.asyncio
     async def test_cookies_without_secure_flag(self, secret_key, callback_data):
@@ -553,8 +685,27 @@ class TestSessionCookieOperations:
         assert "Secure" not in session_cookie
 
     @pytest.mark.asyncio
-    async def test_clear_deletes_both_cookies(self, secret_key, callback_data):
-        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key)
+    async def test_clear_deletes_session_cookie_only_when_csrf_disabled(self, secret_key, callback_data):
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key, enable_csrf_protection=False)
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session.clear()
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        session_cookie = next((h for h in cookie_headers if "session=" in h), None)
+        csrf_cookie = next((h for h in cookie_headers if "CSRF-TOKEN=" in h), None)
+
+        assert session_cookie is not None
+        assert "Max-Age=0" in session_cookie
+        assert csrf_cookie is None
+
+    @pytest.mark.asyncio
+    async def test_clear_deletes_both_cookies_when_csrf_enabled(self, secret_key, callback_data):
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key, enable_csrf_protection=True)
         request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
 
         async def call_next(req):
@@ -573,10 +724,32 @@ class TestSessionCookieOperations:
         assert "Max-Age=0" in csrf_cookie
 
     @pytest.mark.asyncio
+    async def test_clear_takes_precedence_over_save(self, secret_key):
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key)
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session["user_id"] = "test"
+            req.state.session.save()
+            # Call clear after save - clear should win
+            req.state.session.clear()
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        session_cookie = next((h for h in cookie_headers if "session=" in h), None)
+
+        # Should delete, not save
+        assert session_cookie is not None
+        assert "Max-Age=0" in session_cookie
+
+    @pytest.mark.asyncio
     async def test_custom_cookie_names(self, secret_key, callback_data):
         middleware = SessionMiddleware(
             app=Mock(),
             secret_key=secret_key,
+            enable_csrf_protection=True,
             session_cookie_name="custom_session",
             csrf_cookie_name="X-CSRF-TOKEN",
         )
@@ -1196,7 +1369,7 @@ class TestSessionIntegration:
     @pytest.mark.asyncio
     async def test_full_auth_flow_from_callback(self, secret_key, callback_data):
         """Test complete authentication flow: callback -> create session -> persist -> reload -> verify"""
-        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key)
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key, enable_csrf_protection=False)
 
         # Request 1: Simulate callback handler creating session
         request1 = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/callback"})
@@ -1207,12 +1380,12 @@ class TestSessionIntegration:
 
         response1 = await middleware.dispatch(request1, call_next_callback)
 
-        # Verify both cookies were set
+        # Verify session cookie was set (no CSRF when disabled)
         cookie_headers = [h[1].decode() for h in response1.raw_headers if h[0] == b"set-cookie"]
         has_session = any("session=" in h for h in cookie_headers)
         has_csrf = any("CSRF-TOKEN=" in h for h in cookie_headers)
         assert has_session
-        assert has_csrf
+        assert not has_csrf
 
         # Extract session cookie
         session_cookie_header = next((h for h in cookie_headers if "session=" in h), None)
@@ -1236,7 +1409,53 @@ class TestSessionIntegration:
             assert req.state.session["tenant_id"] == "tenant_123"
             assert req.state.session["access_token"] == "access_token_123"
             assert req.state.session["refresh_token"] == "refresh_token_123"
+            # No CSRF token when protection disabled
+            assert "csrf_token" not in req.state.session
+            return Response()
+
+        await middleware.dispatch(request2, call_next_protected)
+
+    @pytest.mark.asyncio
+    async def test_full_auth_flow_with_csrf_protection(self, secret_key, callback_data):
+        """Test auth flow with CSRF protection enabled"""
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key, enable_csrf_protection=True)
+
+        # Request 1: Simulate callback handler creating session
+        request1 = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/callback"})
+
+        async def call_next_callback(req):
+            req.state.session.from_callback(callback_data)
+            return Response()
+
+        response1 = await middleware.dispatch(request1, call_next_callback)
+
+        # Verify both cookies were set
+        cookie_headers = [h[1].decode() for h in response1.raw_headers if h[0] == b"set-cookie"]
+        has_session = any("session=" in h for h in cookie_headers)
+        has_csrf = any("CSRF-TOKEN=" in h for h in cookie_headers)
+        assert has_session
+        assert has_csrf
+
+        # Extract session cookie
+        session_cookie_header = next((h for h in cookie_headers if "session=" in h), None)
+        assert session_cookie_header is not None
+        session_cookie_value = session_cookie_header.split(";")[0].split("=", 1)[1]
+
+        # Request 2: Verify CSRF token in session
+        request2 = Request(
+            scope={
+                "type": "http",
+                "headers": [(b"cookie", f"session={session_cookie_value}".encode())],
+                "method": "GET",
+                "path": "/api/protected",
+            }
+        )
+
+        async def call_next_protected(req):
+            # CSRF token should be present when protection enabled
             assert "csrf_token" in req.state.session
+            assert isinstance(req.state.session["csrf_token"], str)
+            assert len(req.state.session["csrf_token"]) > 0
             return Response()
 
         await middleware.dispatch(request2, call_next_protected)
@@ -1352,14 +1571,11 @@ class TestSessionIntegration:
 
         response3 = await middleware.dispatch(request3, call_next_logout)
 
-        # Verify cookies are cleared
+        # Verify session cookie is cleared
         cookie_headers = [h[1].decode() for h in response3.raw_headers if h[0] == b"set-cookie"]
         session_cookie = next((h for h in cookie_headers if "session=" in h), None)
-        csrf_cookie = next((h for h in cookie_headers if "CSRF-TOKEN=" in h), None)
         assert session_cookie is not None
-        assert csrf_cookie is not None
         assert "Max-Age=0" in session_cookie
-        assert "Max-Age=0" in csrf_cookie
 
         # Request 4: Verify no session (simulate browser deleting cookies)
         request4 = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/dashboard"})
@@ -1482,3 +1698,125 @@ class TestSessionIntegration:
             return Response()
 
         await middleware.dispatch(request2, call_next_verify)
+
+
+class TestKeyRotation:
+    """Test session encryption with key rotation"""
+
+    @pytest.mark.asyncio
+    async def test_single_key_as_string(self, secret_key):
+        """Test middleware works with single key as string"""
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key)
+        assert middleware._encryptor is not None
+
+    @pytest.mark.asyncio
+    async def test_multiple_keys_as_list(self):
+        """Test middleware accepts list of keys"""
+        keys = ["a" * 32, "b" * 32, "c" * 32]
+        middleware = SessionMiddleware(app=Mock(), secret_key=keys)
+        assert middleware._encryptor is not None
+
+    @pytest.mark.asyncio
+    async def test_key_rotation_decrypts_old_sessions(self, encryptor):
+        """Test that sessions encrypted with old key still decrypt with new key list"""
+        old_key = "a" * 32
+        new_key = "b" * 32
+
+        # Encrypt session with old key
+        old_encryptor = DataEncryptor(old_key)
+        session_data = {"user_id": "test_user"}
+        encrypted = old_encryptor.encrypt(session_data)
+
+        # Middleware with key rotation (new key first, old key second)
+        middleware = SessionMiddleware(app=Mock(), secret_key=[new_key, old_key])
+
+        request = Request(
+            scope={
+                "type": "http",
+                "headers": [(b"cookie", f"session={encrypted}".encode())],
+                "method": "GET",
+                "path": "/",
+            }
+        )
+
+        async def call_next(req):
+            # Should decrypt successfully with old key
+            assert req.state.session["user_id"] == "test_user"
+            return Response()
+
+        await middleware.dispatch(request, call_next)
+
+    @pytest.mark.asyncio
+    async def test_key_rotation_decrypts_with_middle_key(self):
+        """Test that sessions encrypted with middle key decrypt correctly"""
+        key1 = "a" * 32
+        key2 = "b" * 32
+        key3 = "c" * 32
+
+        # Encrypt session with middle key
+        middle_encryptor = DataEncryptor(key2)
+        session_data = {"user_id": "middle_user"}
+        encrypted = middle_encryptor.encrypt(session_data)
+
+        # Middleware with 3 keys - middle key should decrypt
+        middleware = SessionMiddleware(app=Mock(), secret_key=[key1, key2, key3])
+
+        request = Request(
+            scope={
+                "type": "http",
+                "headers": [(b"cookie", f"session={encrypted}".encode())],
+                "method": "GET",
+                "path": "/",
+            }
+        )
+
+        async def call_next(req):
+            # Should decrypt successfully with middle key
+            assert req.state.session["user_id"] == "middle_user"
+            return Response()
+
+        await middleware.dispatch(request, call_next)
+
+    @pytest.mark.asyncio
+    async def test_new_sessions_encrypted_with_first_key(self):
+        """Test that new sessions are encrypted with the first key in the list"""
+        old_key = "a" * 32
+        new_key = "b" * 32
+
+        # Middleware with new key first
+        middleware = SessionMiddleware(app=Mock(), secret_key=[new_key, old_key])
+
+        request = Request(scope={"type": "http", "headers": [], "method": "GET", "path": "/"})
+
+        async def call_next(req):
+            req.state.session["user_id"] = "new_user"
+            req.state.session.save()
+            return Response()
+
+        response = await middleware.dispatch(request, call_next)
+
+        # Extract encrypted cookie
+        cookie_headers = [h[1].decode() for h in response.raw_headers if h[0] == b"set-cookie"]
+        session_cookie_header = next((h for h in cookie_headers if "session=" in h), None)
+        assert session_cookie_header is not None
+        encrypted = session_cookie_header.split(";")[0].split("=", 1)[1]
+
+        # Should decrypt with new key only
+        new_encryptor = DataEncryptor(new_key)
+        decrypted = new_encryptor.decrypt(encrypted)
+        assert decrypted["user_id"] == "new_user"
+
+    def test_init_raises_with_empty_key_list(self):
+        """Test that empty key list raises ValueError"""
+        with pytest.raises(ValueError, match="secret_key is required"):
+            SessionMiddleware(app=Mock(), secret_key=[])
+
+    def test_init_raises_with_short_key_in_list(self):
+        """Test that short key in list raises ValueError"""
+        with pytest.raises(ValueError, match="at least 32 characters"):
+            SessionMiddleware(app=Mock(), secret_key=["a" * 32, "short"])
+
+    def test_init_raises_with_empty_string_in_list(self):
+        """Test that empty string in key list raises ValueError"""
+        with pytest.raises(ValueError, match="secret_key at index 1 cannot be empty"):
+            SessionMiddleware(app=Mock(), secret_key=["a" * 32, ""])

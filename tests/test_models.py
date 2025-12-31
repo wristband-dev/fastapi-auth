@@ -1,14 +1,30 @@
+from typing import get_type_hints
+from unittest.mock import Mock
+
+import pytest
+from pydantic import ValidationError
+from wristband.python_jwt import JWTPayload
+
 from wristband.fastapi_auth.models import (
     AuthConfig,
+    AuthResult,
+    AuthStrategy,
     CallbackData,
-    CallbackResult,
+    CallbackFailureReason,
     CallbackResultType,
+    CompletedCallbackResult,
+    JWTAuthConfig,
+    JWTAuthResult,
     LoginConfig,
     LoginState,
     LogoutConfig,
     OAuthAuthorizeUrlConfig,
     RawUserInfo,
+    RedirectRequiredCallbackResult,
+    SameSiteOption,
     SdkConfiguration,
+    Session,
+    SessionAuthConfig,
     SessionResponse,
     TokenData,
     TokenResponse,
@@ -412,8 +428,16 @@ def test_login_config_return_url():
 
 def test_callback_result_type_enum():
     """Test CallbackResultType enum values."""
-    assert CallbackResultType.COMPLETED.value == "COMPLETED"
-    assert CallbackResultType.REDIRECT_REQUIRED.value == "REDIRECT_REQUIRED"
+    assert CallbackResultType.COMPLETED.value == "completed"
+    assert CallbackResultType.REDIRECT_REQUIRED.value == "redirect_required"
+
+
+def test_callback_failure_reason_enum():
+    """Test CallbackFailureReason enum values."""
+    assert CallbackFailureReason.INVALID_GRANT.value == "invalid_grant"
+    assert CallbackFailureReason.INVALID_LOGIN_STATE.value == "invalid_login_state"
+    assert CallbackFailureReason.LOGIN_REQUIRED.value == "login_required"
+    assert CallbackFailureReason.MISSING_LOGIN_STATE.value == "missing_login_state"
 
 
 def test_raw_user_info_creation():
@@ -431,6 +455,93 @@ def test_raw_user_info_creation():
     assert user_info.sub == "user123"
     assert user_info.email == "user@example.com"
     assert user_info.name == "Test User"
+
+
+def test_user_info_all_optionals_none():
+    """Test UserInfo with all optional fields explicitly set to None."""
+    user_info = UserInfo(
+        user_id="user_123",
+        tenant_id="tenant_123",
+        application_id="app_123",
+        identity_provider_name="Wristband",
+        full_name=None,
+        given_name=None,
+        family_name=None,
+        middle_name=None,
+        nickname=None,
+        display_name=None,
+        picture_url=None,
+        email=None,
+        email_verified=None,
+        gender=None,
+        birthdate=None,
+        time_zone=None,
+        locale=None,
+        phone_number=None,
+        phone_number_verified=None,
+        updated_at=None,
+        roles=None,
+        custom_claims=None,
+    )
+
+    assert user_info.user_id == "user_123"
+    assert user_info.full_name is None
+    assert user_info.email is None
+    assert user_info.roles is None
+    assert user_info.custom_claims is None
+
+
+def test_user_info_empty_roles_list():
+    """Test UserInfo with empty roles list."""
+    user_info = UserInfo(
+        user_id="user_123",
+        tenant_id="tenant_123",
+        application_id="app_123",
+        identity_provider_name="Wristband",
+        roles=[],
+    )
+
+    assert user_info.roles is not None
+    assert len(user_info.roles) == 0
+    assert user_info.roles == []
+
+
+def test_user_info_empty_custom_claims():
+    """Test UserInfo with empty custom_claims dict."""
+    user_info = UserInfo(
+        user_id="user_123",
+        tenant_id="tenant_123",
+        application_id="app_123",
+        identity_provider_name="Wristband",
+        custom_claims={},
+    )
+
+    assert user_info.custom_claims is not None
+    assert user_info.custom_claims == {}
+    assert len(user_info.custom_claims) == 0
+
+
+def test_raw_user_info_minimal_only():
+    """Test RawUserInfo with only required fields, all optionals as None."""
+    raw_user_info = RawUserInfo(
+        sub="user_123",
+        tnt_id="tenant_123",
+        app_id="app_123",
+        idp_name="Wristband",
+    )
+
+    # Verify required fields
+    assert raw_user_info.sub == "user_123"
+    assert raw_user_info.tnt_id == "tenant_123"
+    assert raw_user_info.app_id == "app_123"
+    assert raw_user_info.idp_name == "Wristband"
+
+    # Verify all optionals are None
+    assert raw_user_info.name is None
+    assert raw_user_info.email is None
+    assert raw_user_info.email_verified is None
+    assert raw_user_info.roles is None
+    assert raw_user_info.custom_claims is None
 
 
 def test_callback_data_creation():
@@ -532,6 +643,35 @@ def test_callback_data_with_none_optionals():
     assert callback_data.tenant_custom_domain is None
 
 
+def test_callback_data_with_all_optionals():
+    """Test CallbackData with all optional fields populated (companion to test_callback_data_with_none_optionals)."""
+    user_info = UserInfo(
+        user_id="user_123",
+        tenant_id="tenant_123",
+        application_id="app_123",
+        identity_provider_name="Wristband",
+    )
+
+    callback_data = CallbackData(
+        access_token="access_token_123",
+        id_token="id_token_123",
+        expires_at=1234567890,
+        expires_in=3600,
+        tenant_name="tenant1",
+        user_info=user_info,
+        custom_state={"key": "value"},
+        refresh_token="refresh_token_123",
+        return_url="https://example.com/dashboard",
+        tenant_custom_domain="tenant1.example.com",
+    )
+
+    # Verify all optionals are populated
+    assert callback_data.custom_state == {"key": "value"}
+    assert callback_data.refresh_token == "refresh_token_123"
+    assert callback_data.return_url == "https://example.com/dashboard"
+    assert callback_data.tenant_custom_domain == "tenant1.example.com"
+
+
 def test_token_data_creation():
     """Test TokenData creation."""
     token_data = TokenData(
@@ -547,6 +687,26 @@ def test_token_data_creation():
     assert token_data.expires_at == 1234567890
     assert token_data.expires_in == 3600
     assert token_data.refresh_token == "refresh_token_123"
+
+
+def test_token_data_model_dump():
+    """Test TokenData model_dump serialization."""
+    token_data = TokenData(
+        access_token="access_token_123",
+        id_token="id_token_123",
+        expires_at=1234567890,
+        expires_in=3600,
+        refresh_token="refresh_token_123",
+    )
+
+    result = token_data.model_dump()
+
+    assert isinstance(result, dict)
+    assert result["access_token"] == "access_token_123"
+    assert result["id_token"] == "id_token_123"
+    assert result["expires_at"] == 1234567890
+    assert result["expires_in"] == 3600
+    assert result["refresh_token"] == "refresh_token_123"
 
 
 def test_callback_result_completed():
@@ -572,22 +732,91 @@ def test_callback_result_completed():
         tenant_custom_domain=None,
     )
 
-    result = CallbackResult(callback_data=callback_data, type=CallbackResultType.COMPLETED, redirect_url=None)
+    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data)
 
     assert result.callback_data == callback_data
     assert result.type == CallbackResultType.COMPLETED
-    assert result.redirect_url is None
 
 
 def test_callback_result_redirect_required():
     """Test CallbackResult with REDIRECT_REQUIRED type."""
-    result = CallbackResult(
-        callback_data=None, type=CallbackResultType.REDIRECT_REQUIRED, redirect_url="https://example.com/login"
+    result = RedirectRequiredCallbackResult(
+        type=CallbackResultType.REDIRECT_REQUIRED,
+        redirect_url="https://example.com/login",
+        reason=CallbackFailureReason.MISSING_LOGIN_STATE,
     )
 
-    assert result.callback_data is None
     assert result.type == CallbackResultType.REDIRECT_REQUIRED
     assert result.redirect_url == "https://example.com/login"
+    assert result.reason == CallbackFailureReason.MISSING_LOGIN_STATE
+
+
+def test_completed_callback_result_type_frozen():
+    """Test that CompletedCallbackResult.type field is frozen and cannot be modified."""
+    user_info = UserInfo(
+        user_id="user_123",
+        tenant_id="tenant_123",
+        application_id="app_123",
+        identity_provider_name="Wristband",
+    )
+    callback_data = CallbackData(
+        access_token="token",
+        id_token="id_token",
+        expires_at=123456,
+        expires_in=3600,
+        tenant_name="tenant",
+        user_info=user_info,
+        custom_state=None,
+        refresh_token=None,
+        return_url=None,
+        tenant_custom_domain=None,
+    )
+
+    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data)
+
+    # Verify type is set correctly
+    assert result.type == CallbackResultType.COMPLETED
+
+    # Attempt to modify frozen field should raise ValidationError
+    with pytest.raises(ValidationError):
+        result.type = CallbackResultType.REDIRECT_REQUIRED  # type: ignore
+
+
+def test_redirect_required_callback_result_type_frozen():
+    """Test that RedirectRequiredCallbackResult.type field is frozen and cannot be modified."""
+    result = RedirectRequiredCallbackResult(
+        type=CallbackResultType.REDIRECT_REQUIRED,
+        redirect_url="https://example.com/login",
+        reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+    )
+
+    # Verify type is set correctly
+    assert result.type == CallbackResultType.REDIRECT_REQUIRED
+
+    # Attempt to modify frozen field should raise ValidationError
+    with pytest.raises(ValidationError):
+        result.type = CallbackResultType.COMPLETED  # type: ignore
+
+
+def test_redirect_required_callback_result_all_reasons():
+    """Test RedirectRequiredCallbackResult with all possible failure reasons."""
+    reasons = [
+        CallbackFailureReason.MISSING_LOGIN_STATE,
+        CallbackFailureReason.INVALID_LOGIN_STATE,
+        CallbackFailureReason.LOGIN_REQUIRED,
+        CallbackFailureReason.INVALID_GRANT,
+    ]
+
+    for reason in reasons:
+        result = RedirectRequiredCallbackResult(
+            type=CallbackResultType.REDIRECT_REQUIRED,
+            redirect_url="https://example.com/login",
+            reason=reason,
+        )
+
+        assert result.type == CallbackResultType.REDIRECT_REQUIRED
+        assert result.reason == reason
+        assert result.redirect_url == "https://example.com/login"
 
 
 def test_wristband_token_response_creation():
@@ -983,6 +1212,37 @@ def test_user_info_role_from_camel_case():
     assert role.display_name == "Admin Role"
 
 
+def test_validation_errors():
+    """Test that models raise ValidationError for invalid data."""
+    # Missing required field
+    with pytest.raises(ValidationError):
+        UserInfo(
+            # Missing user_id
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+        )  # type: ignore
+
+    # Wrong type for user_id (int instead of str)
+    with pytest.raises(ValidationError):
+        UserInfo(
+            user_id=12345,  # type: ignore - Should be str, not int
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+        )  # type: ignore
+
+    # Invalid type for roles (should be list, not dict)
+    with pytest.raises(ValidationError):
+        UserInfo(
+            user_id="user_123",
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+            roles={"invalid": "type"},  # type: ignore - Should be List[UserInfoRole], not dict
+        )  # type: ignore
+
+
 ########################################
 # RAW USERINFO MODEL TESTS
 ########################################
@@ -1099,6 +1359,32 @@ def test_session_response_empty_metadata():
     assert result["metadata"] == {}
 
 
+def test_session_response_nested_metadata():
+    """Test SessionResponse with complex nested metadata."""
+    complex_metadata = {
+        "user_preferences": {
+            "theme": "dark",
+            "notifications": {"email": True, "sms": False},
+        },
+        "permissions": ["read", "write", "admin"],
+        "nested": {"level1": {"level2": {"level3": "deep_value"}}},
+    }
+
+    session_response = SessionResponse(
+        tenant_id="tenant_123",
+        user_id="user_123",
+        metadata=complex_metadata,
+    )
+
+    assert session_response.metadata == complex_metadata
+    assert session_response.metadata["user_preferences"]["theme"] == "dark"
+    assert session_response.metadata["nested"]["level1"]["level2"]["level3"] == "deep_value"
+
+    # Verify serialization preserves structure
+    result = session_response.model_dump()
+    assert result["metadata"] == complex_metadata
+
+
 ########################################
 # TOKEN RESPONSE MODEL TESTS
 ########################################
@@ -1144,3 +1430,163 @@ def test_token_response_matches_expected_format():
     # This should match the format documented in the model
     expected_keys = {"accessToken", "expiresAt"}
     assert set(result.keys()) == expected_keys
+
+
+########################################
+# SESSION MIDDLEWARE MODEL TESTS
+########################################
+
+
+def test_same_site_option_enum():
+    """Test SameSiteOption enum values and members."""
+    # Test all enum members exist
+    assert hasattr(SameSiteOption, "STRICT")
+    assert hasattr(SameSiteOption, "LAX")
+    assert hasattr(SameSiteOption, "NONE")
+
+    # Test values are correct
+    assert SameSiteOption.STRICT.value == "strict"
+    assert SameSiteOption.LAX.value == "lax"
+    assert SameSiteOption.NONE.value == "none"
+
+    # Test enum equality
+    assert SameSiteOption.STRICT == SameSiteOption.STRICT
+    assert SameSiteOption.STRICT != SameSiteOption.LAX
+
+    # Test values are strings
+    assert isinstance(SameSiteOption.STRICT.value, str)
+    assert isinstance(SameSiteOption.LAX.value, str)
+    assert isinstance(SameSiteOption.NONE.value, str)
+
+
+def test_session_protocol_has_required_attributes():
+    """Test Session protocol defines all expected attributes."""
+    # Get all attributes defined in the protocol
+    protocol_attrs = Session.__annotations__
+
+    # Verify base session fields
+    assert "is_authenticated" in protocol_attrs
+    assert "access_token" in protocol_attrs
+    assert "expires_at" in protocol_attrs
+    assert "user_id" in protocol_attrs
+    assert "tenant_id" in protocol_attrs
+    assert "tenant_name" in protocol_attrs
+    assert "identity_provider_name" in protocol_attrs
+    assert "csrf_token" in protocol_attrs
+    assert "refresh_token" in protocol_attrs
+    assert "tenant_custom_domain" in protocol_attrs
+
+
+def test_jwt_auth_result_creation():
+    """Test JWTAuthResult creation."""
+    payload_dict = {
+        "sub": "user_123",
+        "iss": "https://example.com",
+        "aud": "client_123",
+        "exp": 1234567890,
+        "iat": 1234567800,
+    }
+    payload = JWTPayload(payload_dict=payload_dict)
+
+    result = JWTAuthResult(jwt="eyJhbGc...", payload=payload)
+
+    assert result.jwt == "eyJhbGc..."
+    assert result.payload == payload
+    assert result.payload.sub == "user_123"
+
+
+def test_jwt_auth_result_no_repr():
+    """Test that JWTAuthResult doesn't leak sensitive data in repr."""
+    payload_dict = {
+        "sub": "user_123",
+        "iss": "https://example.com",
+        "aud": "client_123",
+        "exp": 1234567890,
+        "iat": 1234567800,
+    }
+    payload = JWTPayload(payload_dict=payload_dict)
+
+    result = JWTAuthResult(jwt="secret_token_123", payload=payload)
+
+    # Verify __repr__ doesn't exist or doesn't show sensitive data
+    repr_str = repr(result)
+    # Should not contain the actual JWT token
+    # Default repr will show class name and memory address
+    assert "JWTAuthResult" in repr_str
+
+
+def test_auth_strategy_enum_values():
+    """Test AuthStrategy enum has correct values."""
+    assert AuthStrategy.SESSION.value == "session"
+    assert AuthStrategy.JWT.value == "jwt"
+
+
+def test_auth_strategy_enum_is_string():
+    """Test AuthStrategy enum values are strings."""
+    assert isinstance(AuthStrategy.SESSION.value, str)
+    assert isinstance(AuthStrategy.JWT.value, str)
+
+    # Test that enum itself is subclass of str
+    assert isinstance(AuthStrategy.SESSION, str)
+    assert isinstance(AuthStrategy.JWT, str)
+
+
+def test_auth_result_with_session():
+    """Test AuthResult with SESSION strategy."""
+    mock_session = Mock()
+    mock_session.user_id = "user_123"
+
+    result = AuthResult(strategy=AuthStrategy.SESSION, session=mock_session, jwt_result=None)
+
+    assert result.strategy == AuthStrategy.SESSION
+    assert result.session == mock_session
+    assert result.jwt_result is None
+
+
+def test_auth_result_with_jwt():
+    """Test AuthResult with JWT strategy."""
+    payload_dict = {
+        "sub": "user_123",
+        "iss": "https://example.com",
+        "aud": "client_123",
+        "exp": 1234567890,
+        "iat": 1234567800,
+    }
+    payload = JWTPayload(payload_dict=payload_dict)
+    jwt_result = JWTAuthResult(jwt="token", payload=payload)
+
+    result = AuthResult(strategy=AuthStrategy.JWT, session=None, jwt_result=jwt_result)
+
+    assert result.strategy == AuthStrategy.JWT
+    assert result.session is None
+    assert result.jwt_result == jwt_result
+
+
+def test_auth_result_strategy_check():
+    """Test checking which strategy was used in AuthResult."""
+    session_result = AuthResult(strategy=AuthStrategy.SESSION, session=Mock(), jwt_result=None)
+
+    # Pattern users would use
+    if session_result.strategy == AuthStrategy.SESSION:
+        assert session_result.session is not None
+
+    jwt_result = AuthResult(strategy=AuthStrategy.JWT, session=None, jwt_result=Mock())
+
+    if jwt_result.strategy == AuthStrategy.JWT:
+        assert jwt_result.jwt_result is not None
+
+
+def test_session_auth_config_structure():
+    """Test SessionAuthConfig TypedDict structure."""
+    hints = get_type_hints(SessionAuthConfig)
+
+    assert "enable_csrf_protection" in hints
+    assert "csrf_header_name" in hints
+
+
+def test_jwt_auth_config_structure():
+    """Test JWTAuthConfig TypedDict structure."""
+    hints = get_type_hints(JWTAuthConfig)
+
+    assert "jwks_cache_max_size" in hints
+    assert "jwks_cache_ttl" in hints

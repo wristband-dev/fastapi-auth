@@ -57,3 +57,21 @@ class TestGetSession:
         # This test verifies the function signature enables type checking
         # The cast() inside get_session should make this type-safe
         assert isinstance(session, Mock)  # Mock in tests, Session in production
+
+    def test_get_session_with_none_session(self) -> None:
+        """Test get_session when request.state.session is None"""
+        request = Mock(spec=Request)
+        request.state = Mock()
+        request.state.session = None
+
+        # Should return None (not raise)
+        session = get_session(request)
+        assert session is None
+
+    def test_get_session_multiple_calls_same_request(self, mock_request_with_session: Request) -> None:
+        """Test that multiple calls to get_session return the same instance"""
+        session1 = get_session(mock_request_with_session)
+        session2 = get_session(mock_request_with_session)
+
+        # Should return the exact same object
+        assert session1 is session2

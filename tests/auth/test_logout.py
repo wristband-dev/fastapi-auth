@@ -26,7 +26,7 @@ class TestWristbandAuthLogout:
     async def test_logout_with_config_tenant_custom_domain_priority_1(self) -> None:
         """Test logout uses config tenant custom domain as highest priority."""
         request = create_mock_request(
-            "/logout", query_params={"tenant_domain": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
+            "/logout", query_params={"tenant_name": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
         )
         logout_config = LogoutConfig(
             tenant_custom_domain="config.custom.com",
@@ -61,10 +61,10 @@ class TestWristbandAuthLogout:
         assert_redirect_no_cache(response, expected_url)
 
     @pytest.mark.asyncio
-    async def test_logout_with_config_tenant_domain_priority_2(self) -> None:
+    async def test_logout_with_config_tenant_name_priority_2(self) -> None:
         """Test logout uses config tenant domain as second priority."""
         request = create_mock_request(
-            "/logout", query_params={"tenant_domain": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
+            "/logout", query_params={"tenant_name": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
         )
         logout_config = LogoutConfig(tenant_name="config-tenant", redirect_url="https://app.example.com/logged-out")
 
@@ -98,7 +98,7 @@ class TestWristbandAuthLogout:
     async def test_logout_with_query_tenant_custom_domain_priority_3(self) -> None:
         """Test logout uses query tenant custom domain as third priority."""
         request = create_mock_request(
-            "/logout", query_params={"tenant_domain": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
+            "/logout", query_params={"tenant_name": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
         )
         logout_config = LogoutConfig()
 
@@ -126,9 +126,9 @@ class TestWristbandAuthLogout:
         assert_redirect_no_cache(response, expected_url)
 
     @pytest.mark.asyncio
-    async def test_logout_with_query_tenant_domain_priority_4(self) -> None:
+    async def test_logout_with_query_tenant_name_priority_4(self) -> None:
         """Test logout uses query tenant domain as fourth priority."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig()
 
         with (
@@ -289,7 +289,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_with_state_parameter(self) -> None:
         """Test logout includes state parameter in logout URL."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(state="custom_logout_state_123", redirect_url="https://app.example.com/logged-out")
 
         with (
@@ -320,7 +320,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_with_state_parameter_only(self) -> None:
         """Test logout with only state parameter (no redirect_url)."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(state="logout_state_only")
 
         with (
@@ -350,7 +350,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_without_state_parameter(self) -> None:
         """Test logout without state parameter doesn't include it in URL."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(redirect_url="https://app.example.com/logged-out")
 
         with (
@@ -381,7 +381,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_state_exceeds_512_characters_raises_error(self) -> None:
         """Test logout raises ValueError when state exceeds 512 characters."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         # Create a state that's 513 characters long
         long_state = "a" * 513
         logout_config = LogoutConfig(state=long_state)
@@ -409,7 +409,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_state_exactly_512_characters_succeeds(self) -> None:
         """Test logout succeeds when state is exactly 512 characters."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         # Create a state that's exactly 512 characters long
         max_state = "b" * 512
         logout_config = LogoutConfig(state=max_state)
@@ -439,7 +439,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_empty_state_is_ignored(self) -> None:
         """Test logout ignores empty string state parameter."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(state="", redirect_url="https://app.example.com/logged-out")
 
         with (
@@ -471,7 +471,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_with_refresh_token_revokes_successfully(self) -> None:
         """Test logout revokes refresh token when provided."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(refresh_token="valid_refresh_token")
 
         with (
@@ -503,7 +503,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_with_refresh_token_revoke_fails_continues_logout(self) -> None:
         """Test logout continues even if refresh token revocation fails."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(refresh_token="invalid_refresh_token")
 
         with (
@@ -534,7 +534,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_without_refresh_token_skips_revocation(self) -> None:
         """Test logout skips revocation when no refresh token provided."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig()
 
         with (
@@ -566,7 +566,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_builds_logout_path_with_redirect_url(self) -> None:
         """Test logout builds correct path with redirect_url parameter."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(redirect_url="https://app.example.com/farewell")
 
         with (
@@ -597,7 +597,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_builds_logout_path_without_redirect_url(self) -> None:
         """Test logout builds correct path without redirect_url parameter."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig()
 
         with (
@@ -625,7 +625,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_with_application_custom_domain_uses_dot_separator(self) -> None:
         """Test logout uses dot separator when application custom domain is active."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig()
 
         with (
@@ -654,7 +654,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_sets_cache_control_headers(self) -> None:
         """Test logout sets proper cache control headers."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig()
 
         with (
@@ -683,7 +683,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_empty_config_values_are_ignored(self) -> None:
         """Test logout ignores empty string values in config."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(
             tenant_custom_domain="",  # Empty string should be ignored
             tenant_name="   ",  # Whitespace only should be ignored
@@ -715,7 +715,7 @@ class TestWristbandAuthLogout:
     @pytest.mark.asyncio
     async def test_logout_with_all_parameters_combined(self) -> None:
         """Test logout with all parameters combined (state, redirect_url, refresh_token)."""
-        request = create_mock_request("/logout", query_params={"tenant_domain": "tenant1"})
+        request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig(
             state="combined_test_state",
             redirect_url="https://app.example.com/complete-logout",

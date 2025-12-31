@@ -7,8 +7,12 @@ from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.exceptions import InvalidGrantError, WristbandError
 from wristband.fastapi_auth.models import (
     AuthConfig,
+    CallbackFailureReason,
+    CallbackResult,
     CallbackResultType,
+    CompletedCallbackResult,
     LoginState,
+    RedirectRequiredCallbackResult,
     UserInfo,
     WristbandTokenResponse,
 )
@@ -33,7 +37,7 @@ class TestWristbandAuthCallback:
     @pytest.mark.asyncio
     async def test_callback_missing_state_raises_error(self) -> None:
         """Test callback raises TypeError when state parameter is missing."""
-        request = create_mock_request("/callback", query_params={"code": "auth_code", "tenant_domain": "tenant1"})
+        request = create_mock_request("/callback", query_params={"code": "auth_code", "tenant_name": "tenant1"})
 
         with (
             patch.object(
@@ -55,7 +59,7 @@ class TestWristbandAuthCallback:
     async def test_callback_empty_state_raises_error(self) -> None:
         """Test callback raises TypeError when state parameter is empty."""
         request = create_mock_request(
-            "/callback", query_params={"code": "auth_code", "state": "", "tenant_domain": "tenant1"}
+            "/callback", query_params={"code": "auth_code", "state": "", "tenant_name": "tenant1"}
         )
 
         with (
@@ -75,14 +79,14 @@ class TestWristbandAuthCallback:
                 await self.wristband_auth.callback(request)
 
     @pytest.mark.asyncio
-    async def test_callback_missing_tenant_domain_with_subdomain_parsing_raises_error(self) -> None:
+    async def test_callback_missing_tenant_name_with_subdomain_parsing_raises_error(self) -> None:
         """Test callback raises WristbandError when tenant subdomain missing with subdomain parsing enabled."""
         config_with_subdomain = AuthConfig(
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
@@ -99,7 +103,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
         ):
 
-            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_login_url.return_value = "https://{tenant_name}.auth.example.com/login"
             mock_parse_tenant.return_value = "auth.example.com"
 
             with pytest.raises(WristbandError) as exc_info:
@@ -110,8 +114,8 @@ class TestWristbandAuthCallback:
         assert "tenant subdomain" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_callback_missing_tenant_domain_without_subdomain_parsing_raises_error(self) -> None:
-        """Test callback raises WristbandError when tenant_domain param missing without subdomain parsing."""
+    async def test_callback_missing_tenant_name_without_subdomain_parsing_raises_error(self) -> None:
+        """Test callback raises WristbandError when tenant_name param missing without subdomain parsing."""
         request = create_mock_request("/callback", query_params={"code": "auth_code", "state": "test_state"})
 
         with (
@@ -129,14 +133,25 @@ class TestWristbandAuthCallback:
             with pytest.raises(WristbandError) as exc_info:
                 await self.wristband_auth.callback(request)
 
-        assert "missing_tenant_domain" in str(exc_info.value)
-        assert "tenant_domain" in str(exc_info.value)
+        assert "missing_tenant_name" in str(exc_info.value)
+        assert "tenant_name" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_callback_with_error_login_required_returns_redirect(self) -> None:
         """Test callback returns redirect when error=login_required."""
+        login_state = LoginState(
+            state="test_state",
+            code_verifier="test_verifier",
+            redirect_uri="https://app.example.com/callback",
+            return_url=None,
+            custom_state=None,
+        )
+        encrypted_cookie = self.wristband_auth._encrypt_login_state(login_state)
+        cookies = {"login#test_state#1640995200000": encrypted_cookie}
         request = create_mock_request(
-            "/callback", query_params={"error": "login_required", "state": "test_state", "tenant_domain": "tenant1"}
+            "/callback",
+            query_params={"error": "login_required", "state": "test_state", "tenant_name": "tenant1"},
+            cookies=cookies,
         )
 
         with (
@@ -151,11 +166,12 @@ class TestWristbandAuthCallback:
             mock_login_url.return_value = "https://auth.example.com/login"
             mock_parse_tenant.return_value = ""
 
-            result = await self.wristband_auth.callback(request)
+            result: CallbackResult = await self.wristband_auth.callback(request)
 
+        assert isinstance(result, RedirectRequiredCallbackResult)
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
-        assert result.callback_data is None
-        assert result.redirect_url == "https://auth.example.com/login?tenant_domain=tenant1"
+        assert result.reason == CallbackFailureReason.LOGIN_REQUIRED
+        assert result.redirect_url == "https://auth.example.com/login?tenant_name=tenant1"
 
     @pytest.mark.asyncio
     async def test_callback_with_other_error_raises_wristband_error(self) -> None:
@@ -177,7 +193,7 @@ class TestWristbandAuthCallback:
                 "error": "access_denied",
                 "error_description": "User denied access",
                 "state": "test_state",
-                "tenant_domain": "tenant1",
+                "tenant_name": "tenant1",
             },
             cookies=cookies,
         )
@@ -217,7 +233,7 @@ class TestWristbandAuthCallback:
 
         request = create_mock_request(
             "/callback",
-            query_params={"error": "access_denied", "state": "test_state", "tenant_domain": "tenant1"},
+            query_params={"error": "access_denied", "state": "test_state", "tenant_name": "tenant1"},
             cookies=cookies,
         )
 
@@ -243,7 +259,7 @@ class TestWristbandAuthCallback:
     async def test_callback_no_login_state_cookie_returns_redirect(self) -> None:
         """Test callback returns redirect when no valid login state cookie found."""
         request = create_mock_request(
-            "/callback", query_params={"code": "auth_code", "state": "test_state", "tenant_domain": "tenant1"}
+            "/callback", query_params={"code": "auth_code", "state": "test_state", "tenant_name": "tenant1"}
         )
         # No cookies set on request
 
@@ -261,9 +277,10 @@ class TestWristbandAuthCallback:
 
             result = await self.wristband_auth.callback(request)
 
+        assert isinstance(result, RedirectRequiredCallbackResult)
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
-        assert result.callback_data is None
-        assert result.redirect_url == "https://auth.example.com/login?tenant_domain=tenant1"
+        assert result.reason == CallbackFailureReason.MISSING_LOGIN_STATE
+        assert result.redirect_url == "https://auth.example.com/login?tenant_name=tenant1"
 
     @pytest.mark.asyncio
     async def test_callback_mismatched_state_returns_redirect(self) -> None:
@@ -281,7 +298,7 @@ class TestWristbandAuthCallback:
 
         request = create_mock_request(
             "/callback",
-            query_params={"code": "auth_code", "state": "param_state", "tenant_domain": "tenant1"},
+            query_params={"code": "auth_code", "state": "param_state", "tenant_name": "tenant1"},
             cookies=cookies,
         )
 
@@ -299,9 +316,10 @@ class TestWristbandAuthCallback:
 
             result = await self.wristband_auth.callback(request)
 
+        assert isinstance(result, RedirectRequiredCallbackResult)
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
-        assert result.callback_data is None
-        assert result.redirect_url == "https://auth.example.com/login?tenant_domain=tenant1"
+        assert result.reason == CallbackFailureReason.INVALID_LOGIN_STATE
+        assert result.redirect_url == "https://auth.example.com/login?tenant_name=tenant1"
 
     @pytest.mark.asyncio
     async def test_callback_missing_code_after_validation_raises_error(self) -> None:
@@ -317,7 +335,7 @@ class TestWristbandAuthCallback:
         cookies = {"login#test_state#1640995200000": encrypted_cookie}
 
         request = create_mock_request(
-            "/callback", query_params={"state": "test_state", "tenant_domain": "tenant1"}, cookies=cookies
+            "/callback", query_params={"state": "test_state", "tenant_name": "tenant1"}, cookies=cookies
         )  # No code param
 
         with (
@@ -352,7 +370,7 @@ class TestWristbandAuthCallback:
 
         request = create_mock_request(
             "/callback",
-            query_params={"code": "auth_code", "state": "test_state", "tenant_domain": "tenant1"},
+            query_params={"code": "auth_code", "state": "test_state", "tenant_name": "tenant1"},
             cookies=cookies,
         )
 
@@ -392,8 +410,8 @@ class TestWristbandAuthCallback:
 
             result = await self.wristband_auth.callback(request)
 
+        assert isinstance(result, CompletedCallbackResult)
         assert result.type == CallbackResultType.COMPLETED
-        assert result.redirect_url is None
         assert result.callback_data is not None
 
         # Verify callback data
@@ -427,7 +445,7 @@ class TestWristbandAuthCallback:
             query_params={
                 "code": "auth_code",
                 "state": "test_state",
-                "tenant_domain": "tenant1",
+                "tenant_name": "tenant1",
                 "tenant_custom_domain": "custom.tenant.com",
             },
             cookies=cookies,
@@ -468,6 +486,7 @@ class TestWristbandAuthCallback:
 
             result = await self.wristband_auth.callback(request)
 
+        assert isinstance(result, CompletedCallbackResult)
         assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data is not None
         assert result.callback_data.tenant_custom_domain == "custom.tenant.com"
@@ -497,7 +516,7 @@ class TestWristbandAuthCallback:
 
         request = create_mock_request(
             "/callback",
-            query_params={"code": "auth_code", "state": "test_state", "tenant_domain": "tenant1"},
+            query_params={"code": "auth_code", "state": "test_state", "tenant_name": "tenant1"},
             cookies=cookies,
         )
 
@@ -535,7 +554,8 @@ class TestWristbandAuthCallback:
             result = await wristband_auth.callback(request)
 
         # Should use default buffer of 60 (from __init__)
-        assert result.callback_data is not None
+        assert isinstance(result, CompletedCallbackResult)
+        assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data.expires_in == 3540  # 3600 - 60 (default buffer)
         assert result.callback_data.expires_at == int((1640995200.0 + 3540) * 1000)
 
@@ -554,7 +574,7 @@ class TestWristbandAuthCallback:
 
         request = create_mock_request(
             "/callback",
-            query_params={"code": "invalid_code", "state": "test_state", "tenant_domain": "tenant1"},
+            query_params={"code": "invalid_code", "state": "test_state", "tenant_name": "tenant1"},
             cookies=cookies,
         )
 
@@ -574,9 +594,10 @@ class TestWristbandAuthCallback:
 
             result = await self.wristband_auth.callback(request)
 
+        assert isinstance(result, RedirectRequiredCallbackResult)
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
-        assert result.callback_data is None
-        assert result.redirect_url == "https://auth.example.com/login?tenant_domain=tenant1"
+        assert result.reason == CallbackFailureReason.INVALID_GRANT
+        assert result.redirect_url == "https://auth.example.com/login?tenant_name=tenant1"
 
     @pytest.mark.asyncio
     async def test_callback_other_exception_gets_raised(self) -> None:
@@ -593,7 +614,7 @@ class TestWristbandAuthCallback:
 
         request = create_mock_request(
             "/callback",
-            query_params={"code": "auth_code", "state": "test_state", "tenant_domain": "tenant1"},
+            query_params={"code": "auth_code", "state": "test_state", "tenant_name": "tenant1"},
             cookies=cookies,
         )
 
@@ -622,7 +643,7 @@ class TestWristbandAuthCallback:
         mock_request.query_params.getlist = lambda key: {
             "code": ["auth_code", "duplicate_code"],
             "state": ["test_state"],
-            "tenant_domain": ["tenant1"],
+            "tenant_name": ["tenant1"],
         }.get(key, [])
 
         with (
@@ -643,13 +664,13 @@ class TestWristbandAuthCallback:
 
     @pytest.mark.asyncio
     async def test_callback_with_subdomain_parsing_extracts_tenant_correctly(self) -> None:
-        """Test callback extracts tenant domain from subdomain when subdomain parsing enabled."""
+        """Test callback extracts tenant name from subdomain when subdomain parsing enabled."""
         config_with_subdomain = AuthConfig(
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
             token_expiration_buffer=60,
@@ -701,11 +722,12 @@ class TestWristbandAuthCallback:
             patch("time.time", return_value=1640995200.0),
         ):
 
-            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_login_url.return_value = "https://{tenant_name}.auth.example.com/login"
             mock_parse_tenant.return_value = "auth.example.com"
 
             result = await wristband_auth.callback(request)
 
+        assert isinstance(result, CompletedCallbackResult)
         assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data is not None
         assert result.callback_data.tenant_name == "tenant1"
@@ -716,9 +738,8 @@ class TestWristbandAuthCallback:
         request = create_mock_request(
             "/callback",
             query_params={
-                "error": "login_required",
                 "state": "test_state",
-                "tenant_domain": "tenant1",
+                "tenant_name": "tenant1",
                 "tenant_custom_domain": "custom.tenant.com",
             },
         )
@@ -737,10 +758,12 @@ class TestWristbandAuthCallback:
 
             result = await self.wristband_auth.callback(request)
 
+        assert isinstance(result, RedirectRequiredCallbackResult)
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
+        assert result.reason == CallbackFailureReason.MISSING_LOGIN_STATE
         assert (
             result.redirect_url
-            == "https://auth.example.com/login?tenant_domain=tenant1&tenant_custom_domain=custom.tenant.com"
+            == "https://auth.example.com/login?tenant_name=tenant1&tenant_custom_domain=custom.tenant.com"
         )
 
     @pytest.mark.asyncio
@@ -750,8 +773,8 @@ class TestWristbandAuthCallback:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
@@ -770,12 +793,14 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
         ):
 
-            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_login_url.return_value = "https://{tenant_name}.auth.example.com/login"
             mock_parse_tenant.return_value = "auth.example.com"
 
             result = await wristband_auth.callback(request)
 
+        assert isinstance(result, RedirectRequiredCallbackResult)
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
+        assert result.reason == CallbackFailureReason.MISSING_LOGIN_STATE
         assert result.redirect_url == "https://tenant1.auth.example.com/login"
 
     @pytest.mark.asyncio
@@ -804,7 +829,7 @@ class TestWristbandAuthCallback:
 
         request = create_mock_request(
             "/callback",
-            query_params={"code": "auth_code", "state": "test_state", "tenant_domain": "tenant1"},
+            query_params={"code": "auth_code", "state": "test_state", "tenant_name": "tenant1"},
             cookies=cookies,
         )
 
@@ -842,6 +867,112 @@ class TestWristbandAuthCallback:
             result = await wristband_auth.callback(request)
 
         # Should not apply any buffer (3600 - 0 = 3600)
+        assert isinstance(result, CompletedCallbackResult)
+        assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data is not None
         assert result.callback_data.expires_in == 3600  # No buffer applied
         assert result.callback_data.expires_at == int((1640995200.0 + 3600) * 1000)
+
+
+class TestWristbandAuthCallbackBackwardCompatibility:
+    """Test cases for backward compatibility with {tenant_domain} placeholder in callback."""
+
+    def setup_method(self) -> None:
+        """Set up test fixtures."""
+        self.auth_config = AuthConfig(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            login_state_secret=TEST_LOGIN_STATE_SECRET,
+            login_url="https://{tenant_domain}.auth.example.com/login",
+            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            wristband_application_vanity_domain="auth.example.com",
+            parse_tenant_from_root_domain="auth.example.com",
+            token_expiration_buffer=60,
+        )
+        self.wristband_auth = WristbandAuth(self.auth_config)
+
+    @pytest.mark.asyncio
+    async def test_callback_tenant_domain_placeholder_works(self) -> None:
+        """Test that callback works with {tenant_domain} placeholder for backward compatibility."""
+        login_state = LoginState(
+            state="test_state",
+            code_verifier="test_verifier",
+            redirect_uri="https://tenant1.app.example.com/callback",
+            return_url=None,
+            custom_state=None,
+        )
+        encrypted_cookie = self.wristband_auth._encrypt_login_state(login_state)
+        cookies = {"login#test_state#1640995200000": encrypted_cookie}
+
+        request = create_mock_request(
+            "/callback",
+            query_params={"code": "auth_code", "state": "test_state"},
+            cookies=cookies,
+            host="tenant1.auth.example.com",
+        )
+
+        mock_token_response = WristbandTokenResponse(
+            access_token="access_token_123",
+            id_token="id_token_123",
+            expires_in=3600,
+            refresh_token="refresh_token_123",
+            token_type="Bearer",
+            scope="openid offline_access email",
+        )
+
+        mock_user_info = UserInfo(
+            user_id="user_123",
+            tenant_id="tenant_123",
+            application_id="app_123",
+            identity_provider_name="Wristband",
+            email="user@example.com",
+            email_verified=True,
+        )
+
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+            patch.object(self.wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
+            patch.object(self.wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
+            patch("time.time", return_value=1640995200.0),
+        ):
+            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_parse_tenant.return_value = "auth.example.com"
+
+            result = await self.wristband_auth.callback(request)
+
+        assert isinstance(result, CompletedCallbackResult)
+        assert result.type == CallbackResultType.COMPLETED
+        assert result.callback_data is not None
+        assert result.callback_data.tenant_name == "tenant1"
+
+    @pytest.mark.asyncio
+    async def test_callback_tenant_domain_redirect_url_substitution(self) -> None:
+        """Test that {tenant_domain} placeholder gets substituted in redirect URLs."""
+        request = create_mock_request(
+            "/callback",
+            query_params={"error": "login_required", "state": "test_state"},
+            host="tenant1.auth.example.com",
+        )
+
+        with (
+            patch.object(
+                self.wristband_auth._config_resolver, "get_login_url", new_callable=AsyncMock
+            ) as mock_login_url,
+            patch.object(
+                self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
+            ) as mock_parse_tenant,
+        ):
+            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_parse_tenant.return_value = "auth.example.com"
+
+            result = await self.wristband_auth.callback(request)
+
+        assert isinstance(result, RedirectRequiredCallbackResult)
+        assert result.type == CallbackResultType.REDIRECT_REQUIRED
+        assert result.reason == CallbackFailureReason.MISSING_LOGIN_STATE
+        assert result.redirect_url == "https://tenant1.auth.example.com/login"

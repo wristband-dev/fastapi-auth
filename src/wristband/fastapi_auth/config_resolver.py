@@ -1,4 +1,5 @@
 import asyncio
+import re
 from typing import Optional
 
 from .client import WristbandApiClient
@@ -8,7 +9,8 @@ from .models import AuthConfig, SdkConfiguration
 _default_scopes = ["openid", "offline_access", "email"]
 _max_fetch_attempts = 3
 _attempt_delay_seconds = 0.1  # 100 milliseconds
-_tenant_domain_token: str = "{tenant_domain}"
+_tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
+_tenant_placeholder_msg = '"{tenant_name}" or "{tenant_domain}" placeholder'
 
 
 class ConfigResolver:
@@ -105,6 +107,8 @@ class ConfigResolver:
             raise TypeError("The [wristband_application_vanity_domain] config must have a value.")
         if self.auth_config.token_expiration_buffer < 0:
             raise TypeError("The [token_expiration_buffer] config must be greater than or equal to 0.")
+        if self.auth_config.parse_tenant_from_root_domain and ":" in self.auth_config.parse_tenant_from_root_domain:
+            raise TypeError("The [parse_tenant_from_root_domain] config should not include a port.")
 
     def _validate_strict_url_auth_configs(self) -> None:
         """Validate URL configuration when auto-configure is disabled."""
@@ -114,63 +118,59 @@ class ConfigResolver:
             raise TypeError("The [redirect_uri] config must have a value when auto-configure is disabled.")
 
         if self.auth_config.parse_tenant_from_root_domain:
-            if _tenant_domain_token not in self.auth_config.login_url:
+            if not _tenant_placeholder_pattern.search(self.auth_config.login_url):
                 raise TypeError(
-                    'The [login_url] must contain the "{tenant_domain}" token when using the '
+                    f"The [login_url] must contain the {_tenant_placeholder_msg} when using the "
                     "[parse_tenant_from_root_domain] config."
                 )
-            if _tenant_domain_token not in self.auth_config.redirect_uri:
+            if not _tenant_placeholder_pattern.search(self.auth_config.redirect_uri):
                 raise TypeError(
-                    'The [redirect_uri] must contain the "{tenant_domain}" token when using the '
+                    f"The [redirect_uri] must contain the {_tenant_placeholder_msg} when using the "
                     "[parse_tenant_from_root_domain] config."
                 )
         else:
-            if _tenant_domain_token in self.auth_config.login_url:
+            if _tenant_placeholder_pattern.search(self.auth_config.login_url):
                 raise TypeError(
-                    'The [login_url] cannot contain the "{tenant_domain}" token when the '
+                    f"The [login_url] cannot contain the {_tenant_placeholder_msg} when the "
                     "[parse_tenant_from_root_domain] is absent."
                 )
-            if _tenant_domain_token in self.auth_config.redirect_uri:
+            if _tenant_placeholder_pattern.search(self.auth_config.redirect_uri):
                 raise TypeError(
-                    'The [redirect_uri] cannot contain the "{tenant_domain}" token when the '
+                    f"The [redirect_uri] cannot contain the {_tenant_placeholder_msg} when the "
                     "[parse_tenant_from_root_domain] is absent."
                 )
 
     def _validate_partial_url_auth_configs(self) -> None:
         """Validate manually provided URL configuration when auto-configure is enabled."""
         if self.auth_config.login_url:
-            if (
-                self.auth_config.parse_tenant_from_root_domain
-                and _tenant_domain_token not in self.auth_config.login_url
+            if self.auth_config.parse_tenant_from_root_domain and not _tenant_placeholder_pattern.search(
+                self.auth_config.login_url
             ):
                 raise TypeError(
-                    'The [login_url] must contain the "{tenant_domain}" token when using the '
+                    f"The [login_url] must contain the {_tenant_placeholder_msg} when using the "
                     "[parse_tenant_from_root_domain] config."
                 )
-            if (
-                not self.auth_config.parse_tenant_from_root_domain
-                and _tenant_domain_token in self.auth_config.login_url
+            if not self.auth_config.parse_tenant_from_root_domain and _tenant_placeholder_pattern.search(
+                self.auth_config.login_url
             ):
                 raise TypeError(
-                    'The [login_url] cannot contain the "{tenant_domain}" token when the '
+                    f"The [login_url] cannot contain the {_tenant_placeholder_msg} when the "
                     "[parse_tenant_from_root_domain] is absent."
                 )
 
         if self.auth_config.redirect_uri:
-            if (
-                self.auth_config.parse_tenant_from_root_domain
-                and _tenant_domain_token not in self.auth_config.redirect_uri
+            if self.auth_config.parse_tenant_from_root_domain and not _tenant_placeholder_pattern.search(
+                self.auth_config.redirect_uri
             ):
                 raise TypeError(
-                    'The [redirect_uri] must contain the "{tenant_domain}" token when using the '
+                    f"The [redirect_uri] must contain the {_tenant_placeholder_msg} when using the "
                     "[parse_tenant_from_root_domain] config."
                 )
-            if (
-                not self.auth_config.parse_tenant_from_root_domain
-                and _tenant_domain_token in self.auth_config.redirect_uri
+            if not self.auth_config.parse_tenant_from_root_domain and _tenant_placeholder_pattern.search(
+                self.auth_config.redirect_uri
             ):
                 raise TypeError(
-                    'The [redirect_uri] cannot contain the "{tenant_domain}" token when the '
+                    f"The [redirect_uri] cannot contain the {_tenant_placeholder_msg} when the "
                     "[parse_tenant_from_root_domain] is absent."
                 )
 
@@ -193,29 +193,29 @@ class ConfigResolver:
 
         # Validate the tenant domain token logic with final resolved values
         if parse_tenant_from_root_domain:
-            if _tenant_domain_token not in login_url:
+            if not _tenant_placeholder_pattern.search(login_url):
                 raise WristbandError(
                     "config_validation_error",
-                    'The resolved [login_url] must contain the "{tenant_domain}" token when using '
+                    f"The resolved [login_url] must contain the {_tenant_placeholder_msg} when using "
                     "[parse_tenant_from_root_domain].",
                 )
-            if _tenant_domain_token not in redirect_uri:
+            if not _tenant_placeholder_pattern.search(redirect_uri):
                 raise WristbandError(
                     "config_validation_error",
-                    'The resolved [redirect_uri] must contain the "{tenant_domain}" token when using '
+                    f"The resolved [redirect_uri] must contain the {_tenant_placeholder_msg} when using "
                     "[parse_tenant_from_root_domain].",
                 )
         else:
-            if _tenant_domain_token in login_url:
+            if _tenant_placeholder_pattern.search(login_url):
                 raise WristbandError(
                     "config_validation_error",
-                    'The resolved [login_url] cannot contain the "{tenant_domain}" token when '
+                    f"The resolved [login_url] cannot contain the {_tenant_placeholder_msg} when "
                     "[parse_tenant_from_root_domain] is absent.",
                 )
-            if _tenant_domain_token in redirect_uri:
+            if _tenant_placeholder_pattern.search(redirect_uri):
                 raise WristbandError(
                     "config_validation_error",
-                    'The resolved [redirect_uri] cannot contain the "{tenant_domain}" token when '
+                    f"The resolved [redirect_uri] cannot contain the {_tenant_placeholder_msg} when "
                     "[parse_tenant_from_root_domain] is absent.",
                 )
 
