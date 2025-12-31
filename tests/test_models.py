@@ -1459,11 +1459,6 @@ def test_same_site_option_enum():
     assert isinstance(SameSiteOption.NONE.value, str)
 
 
-def test_session_protocol_exists():
-    """Test that Session protocol is defined and importable."""
-    assert hasattr(Session, "__protocol_attrs__")
-
-
 def test_session_protocol_has_required_attributes():
     """Test Session protocol defines all expected attributes."""
     # Get all attributes defined in the protocol
