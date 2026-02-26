@@ -470,4 +470,4 @@ def get_session(request: Request) -> Session:
     if not hasattr(request.state, "session"):
         raise RuntimeError("Session not found. Ensure SessionMiddleware is registered in your app.")
 
-    return cast(Session, request.state.session)
+    return cast(Session, request.state.session)  # type: ignore[attr-defined]

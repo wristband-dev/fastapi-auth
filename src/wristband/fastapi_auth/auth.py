@@ -1006,15 +1006,15 @@ class WristbandAuth:
             raise RuntimeError("Session not found. Ensure SessionMiddleware is registered in your app.")
 
         # Check if the session contains an authenticated user
-        if not request.state.session.is_authenticated:
+        if not request.state.session.is_authenticated:  # type: ignore[attr-defined]
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
         # Validate CSRF token if protection is enabled
         if enable_csrf_protection and not is_csrf_token_valid(request, csrf_header_name):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
-        refresh_token = request.state.session.refresh_token
-        expires_at = request.state.session.expires_at
+        refresh_token = request.state.session.refresh_token  # type: ignore[attr-defined]
+        expires_at = request.state.session.expires_at  # type: ignore[attr-defined]
         if refresh_token is not None and expires_at is not None:
             try:
                 # Attempt to refresh the access token if it has expired
@@ -1022,9 +1022,9 @@ class WristbandAuth:
 
                 # Update session with new tokens if refresh occurred
                 if new_token_data:
-                    request.state.session.access_token = new_token_data.access_token
-                    request.state.session.refresh_token = new_token_data.refresh_token
-                    request.state.session.expires_at = new_token_data.expires_at
+                    request.state.session.access_token = new_token_data.access_token  # type: ignore[attr-defined]
+                    request.state.session.refresh_token = new_token_data.refresh_token  # type: ignore[attr-defined]
+                    request.state.session.expires_at = new_token_data.expires_at  # type: ignore[attr-defined]
 
             except Exception as e:
                 # Log the error and return 401 for any token refresh failures
@@ -1032,8 +1032,8 @@ class WristbandAuth:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
         # Always save the session to update cookies (rolling session expiration)
-        request.state.session.save()
-        return cast(Session, request.state.session)
+        request.state.session.save()  # type: ignore[attr-defined]
+        return cast(Session, request.state.session)  # type: ignore[attr-defined]
 
     async def _validate_jwt_auth(
         self, request: Request, jwks_cache_max_size: Optional[int], jwks_cache_ttl: Optional[int]

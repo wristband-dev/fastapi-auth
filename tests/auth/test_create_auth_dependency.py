@@ -79,18 +79,14 @@ class TestCreateAuthDependency:
     def test_raises_error_when_strategies_contains_duplicates(self, wristband_auth: WristbandAuth) -> None:
         """Test that ValueError is raised when strategies list contains duplicates"""
         with pytest.raises(ValueError) as exc_info:
-            wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION, AuthStrategy.SESSION]
-            )
+            wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.SESSION])
 
         assert "Duplicate authentication strategies are not allowed" in str(exc_info.value)
 
     def test_raises_error_when_invalid_strategy_type(self, wristband_auth: WristbandAuth) -> None:
         """Test that ValueError is raised when strategy is not AuthStrategy enum"""
         with pytest.raises(ValueError) as exc_info:
-            wristband_auth.create_auth_dependency(
-                strategies=["SESSION"]  # type: ignore[list-item]
-            )
+            wristband_auth.create_auth_dependency(strategies=["SESSION"])  # type: ignore[list-item]
 
         assert "Invalid authentication strategy" in str(exc_info.value)
 
@@ -106,9 +102,7 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_session
 
-            dependency = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION]
-            )
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION])
             result = await dependency(mock_request)
 
             assert isinstance(result, AuthResult)
@@ -124,14 +118,10 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_session
 
-            session_config = SessionAuthConfig(
-                enable_csrf_protection=True,
-                csrf_header_name="X-Custom-CSRF"
-            )
+            session_config = SessionAuthConfig(enable_csrf_protection=True, csrf_header_name="X-Custom-CSRF")
 
             dependency = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION],
-                session_config=session_config
+                strategies=[AuthStrategy.SESSION], session_config=session_config
             )
             await dependency(mock_request)
 
@@ -146,9 +136,7 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_session
 
-            dependency = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION]
-            )
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION])
             await dependency(mock_request)
 
             # Verify defaults were used
@@ -166,9 +154,7 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_jwt_result
 
-            dependency = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.JWT]
-            )
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.JWT])
             result = await dependency(mock_request)
 
             assert isinstance(result, AuthResult)
@@ -184,15 +170,9 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_jwt_result
 
-            jwt_config = JWTAuthConfig(
-                jwks_cache_max_size=50,
-                jwks_cache_ttl=7200
-            )
+            jwt_config = JWTAuthConfig(jwks_cache_max_size=50, jwks_cache_ttl=7200)
 
-            dependency = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.JWT],
-                jwt_config=jwt_config
-            )
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.JWT], jwt_config=jwt_config)
             await dependency(mock_request)
 
             # Verify config was passed to validator
@@ -206,9 +186,7 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_jwt_result
 
-            dependency = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.JWT]
-            )
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.JWT])
             await dependency(mock_request)
 
             # Verify defaults (None) were used
@@ -227,9 +205,7 @@ class TestCreateAuthDependency:
             with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
                 mock_session_auth.return_value = mock_session
 
-                dependency = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
-                )
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
                 result = await dependency(mock_request)
 
                 # SESSION succeeded
@@ -251,9 +227,7 @@ class TestCreateAuthDependency:
                 # JWT succeeds
                 mock_jwt_auth.return_value = mock_jwt_result
 
-                dependency = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
-                )
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
                 result = await dependency(mock_request)
 
                 # JWT succeeded after SESSION failed
@@ -275,9 +249,7 @@ class TestCreateAuthDependency:
                 mock_session_auth.side_effect = HTTPException(status_code=status.HTTP_403_FORBIDDEN)
                 mock_jwt_auth.side_effect = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-                dependency = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
-                )
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
 
                 with pytest.raises(HTTPException) as exc_info:
                     await dependency(mock_request)
@@ -294,18 +266,14 @@ class TestCreateAuthDependency:
             with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
                 # SESSION fails with 403
                 mock_session_auth.side_effect = HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="CSRF validation failed"
+                    status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed"
                 )
                 # JWT fails with custom 401
                 mock_jwt_auth.side_effect = HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token expired"
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
                 )
 
-                dependency = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
-                )
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
 
                 with pytest.raises(HTTPException) as exc_info:
                     await dependency(mock_request)
@@ -326,9 +294,7 @@ class TestCreateAuthDependency:
                 # JWT succeeds
                 mock_jwt_auth.return_value = mock_jwt_result
 
-                dependency = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
-                )
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
                 result = await dependency(mock_request)
 
                 # JWT succeeded after SESSION raised unexpected error
@@ -346,16 +312,12 @@ class TestCreateAuthDependency:
                 mock_jwt_auth.return_value = mock_jwt_result
 
                 # JWT first
-                dependency1 = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.JWT, AuthStrategy.SESSION]
-                )
+                dependency1 = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.JWT, AuthStrategy.SESSION])
                 result1 = await dependency1(mock_request)
                 assert result1.strategy == AuthStrategy.JWT
 
                 # SESSION first
-                dependency2 = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
-                )
+                dependency2 = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
                 result2 = await dependency2(mock_request)
                 assert result2.strategy == AuthStrategy.SESSION
 
@@ -372,9 +334,7 @@ class TestCreateAuthDependency:
             mock_validate.return_value = mock_session
 
             with patch("wristband.fastapi_auth.auth._logger") as mock_logger:
-                dependency = wristband_auth.create_auth_dependency(
-                    strategies=[AuthStrategy.SESSION]
-                )
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION])
                 await dependency(mock_request)
 
                 # Check logs
@@ -383,9 +343,7 @@ class TestCreateAuthDependency:
                 assert any("Trying SESSION authentication" in msg for msg in debug_calls)
 
     @pytest.mark.asyncio
-    async def test_logs_strategy_failures(
-        self, wristband_auth: WristbandAuth, mock_request: Request
-    ) -> None:
+    async def test_logs_strategy_failures(self, wristband_auth: WristbandAuth, mock_request: Request) -> None:
         """Test that strategy failures are logged"""
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
             with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
@@ -418,9 +376,7 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_session
 
-            dependency = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION]
-            )
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION])
 
             result1 = await dependency(mock_request)
             result2 = await dependency(mock_request)
@@ -439,12 +395,10 @@ class TestCreateAuthDependency:
 
             # Different configs
             dep1 = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION],
-                session_config=SessionAuthConfig(enable_csrf_protection=True)
+                strategies=[AuthStrategy.SESSION], session_config=SessionAuthConfig(enable_csrf_protection=True)
             )
             dep2 = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION],
-                session_config=SessionAuthConfig(enable_csrf_protection=False)
+                strategies=[AuthStrategy.SESSION], session_config=SessionAuthConfig(enable_csrf_protection=False)
             )
 
             await dep1(mock_request)

@@ -85,7 +85,7 @@ def is_csrf_token_valid(request: Request, csrf_header_name: str) -> bool:
 
     try:
         # Check both tokens exist and match
-        session_csrf = request.state.session.csrf_token
+        session_csrf = request.state.session.csrf_token  # type: ignore[attr-defined]
         header_csrf = request.headers.get(csrf_header_name)
 
         if not session_csrf or not header_csrf:

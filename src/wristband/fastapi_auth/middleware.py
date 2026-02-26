@@ -119,7 +119,7 @@ class SessionMiddleware(BaseHTTPMiddleware):
             session._load_from_dict({})
 
         # Attach session to request.state
-        request.state.session = session
+        request.state.session = session  # type: ignore[attr-defined]
 
         # Process the request
         response = await call_next(request)
