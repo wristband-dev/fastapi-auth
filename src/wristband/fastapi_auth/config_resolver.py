@@ -176,13 +176,6 @@ class ConfigResolver:
 
     def _validate_all_dynamic_configs(self, sdk_configuration: SdkConfiguration) -> None:
         """Validate all dynamic configurations after SDK config is loaded."""
-        # Validate that required fields are present in the SDK config response
-        if not sdk_configuration.login_url:
-            raise WristbandError("sdk_config_invalid", "SDK configuration response missing required field: login_url")
-        if not sdk_configuration.redirect_uri:
-            raise WristbandError(
-                "sdk_config_invalid", "SDK configuration response missing required field: redirect_uri"
-            )
 
         # Use manual config values if provided, otherwise use SDK config values
         login_url = self.auth_config.login_url or sdk_configuration.login_url
@@ -190,6 +183,16 @@ class ConfigResolver:
         parse_tenant_from_root_domain = (
             self.auth_config.parse_tenant_from_root_domain or sdk_configuration.login_url_tenant_domain_suffix or ""
         )
+
+        # Validate that required fields are present in the SDK config response
+        if not login_url:
+            raise WristbandError("sdk_config_invalid", "SDK configuration response missing required field: login_url")
+        if not redirect_uri:
+            raise WristbandError(
+                "sdk_config_invalid",
+                "The [redirect_uri] could not be resolved. Provide it explicitly in your SDK config "
+                "or ensure your Wristband OAuth2 Client has a single redirect URI configured.",
+            )
 
         # Validate the tenant domain token logic with final resolved values
         if parse_tenant_from_root_domain:
@@ -324,7 +327,7 @@ class ConfigResolver:
         # 2. If auto-configure is enabled, get from SDK config
         if self.get_auto_configure_enabled():
             sdk_config = await self._load_sdk_config()
-            return sdk_config.redirect_uri
+            return sdk_config.redirect_uri or ""
 
         # 3. This should not happen if validation is done properly
         raise TypeError("The [redirect_uri] config must have a value")

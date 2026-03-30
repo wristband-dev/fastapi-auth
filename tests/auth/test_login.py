@@ -887,6 +887,44 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
         with pytest.raises(TypeError, match="More than one \\[login_hint\\] query parameter was encountered"):
             self.wristband_auth._get_oauth_authorize_url(mock_request, oauth_config)
 
+    def test_get_oauth_authorize_url_with_idp_hint(self) -> None:
+        """Test _get_oauth_authorize_url includes idp_hint when present."""
+
+        request = create_mock_request("/login", query_params={"idp_hint": "google"})
+        oauth_config = OAuthAuthorizeUrlConfig(
+            client_id=self.auth_config.client_id,
+            redirect_uri=self.auth_config.redirect_uri or "",
+            code_verifier="test_verifier",
+            scopes=self.auth_config.scopes,
+            state="test_state",
+            tenant_custom_domain="custom.tenant.com",
+            wristband_application_vanity_domain=self.auth_config.wristband_application_vanity_domain,
+        )
+
+        result = self.wristband_auth._get_oauth_authorize_url(request, oauth_config)
+
+        assert "idp_hint=google" in result
+
+    def test_get_oauth_authorize_url_multiple_idp_hints_raises_error(self) -> None:
+        """Test _get_oauth_authorize_url raises error when multiple idp_hint params exist."""
+
+        # Create mock with multiple idp_hint values
+        mock_request = create_mock_request("/login")
+        mock_request.query_params.getlist = lambda key: (["google", "facebook"] if key == "idp_hint" else [])
+
+        oauth_config = OAuthAuthorizeUrlConfig(
+            client_id=self.auth_config.client_id,
+            redirect_uri=self.auth_config.redirect_uri or "",
+            code_verifier="test_verifier",
+            scopes=self.auth_config.scopes,
+            state="test_state",
+            tenant_custom_domain="custom.tenant.com",
+            wristband_application_vanity_domain=self.auth_config.wristband_application_vanity_domain,
+        )
+
+        with pytest.raises(TypeError, match="More than one \\[idp_hint\\] query parameter was encountered"):
+            self.wristband_auth._get_oauth_authorize_url(mock_request, oauth_config)
+
 
 class TestWristbandAuthCookieManagement:
     """Test cases for login state cookie management methods."""

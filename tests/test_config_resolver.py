@@ -675,7 +675,34 @@ class TestConfigResolverDynamicValidation:
                 await resolver.get_redirect_uri()
 
             assert exc_info.value.error == "sdk_config_invalid"
-            assert "missing required field: redirect_uri" in exc_info.value.error_description
+            assert (
+                "The [redirect_uri] could not be resolved. Provide it explicitly in your SDK config "
+                "or ensure your Wristband OAuth2 Client has a single redirect URI configured."
+                in exc_info.value.error_description
+            )
+
+    @pytest.mark.asyncio
+    async def test_manual_redirect_uri_overrides_missing_sdk_redirect_uri(self):
+        """Test that manual redirect_uri succeeds even when SDK config returns empty redirect_uri."""
+        invalid_sdk_config = SdkConfiguration(
+            login_url="https://sdk.example.com/login", redirect_uri="", is_application_custom_domain_active=False
+        )
+
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            redirect_uri="https://manual.example.com/callback",
+        )
+
+        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_sdk_configuration = AsyncMock(return_value=invalid_sdk_config)
+            mock_client_class.return_value = mock_client
+
+            resolver = ConfigResolver(config)
+            result = await resolver.get_redirect_uri()
+            assert result == "https://manual.example.com/callback"
 
     @pytest.mark.asyncio
     async def test_validate_resolved_config_with_tenant_domain(self):
