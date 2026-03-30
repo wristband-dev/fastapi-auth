@@ -144,6 +144,20 @@ def test_sdk_configuration_creation_minimal():
     assert config.login_url_tenant_domain_suffix is None
 
 
+def test_sdk_configuration_from_api_response_null_redirect_uri():
+    """Test SdkConfiguration.from_api_response when redirectUri is null (multiple redirect URIs registered)."""
+    api_response = {
+        "loginUrl": "https://auth.example.com/login",
+        "redirectUri": None,
+        "isApplicationCustomDomainActive": False,
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    assert config.login_url == "https://auth.example.com/login"
+    assert config.redirect_uri is None
+
+
 def test_sdk_configuration_creation_with_all_fields():
     """Test SdkConfiguration creation with all fields."""
     config = SdkConfiguration(
