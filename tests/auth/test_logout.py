@@ -45,6 +45,12 @@ class TestWristbandAuthLogout:
                 self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
             ) as mock_parse_tenant,
             patch.object(self.wristband_auth._wristband_api, "revoke_refresh_token"),
+            patch.object(
+                self.wristband_auth._wristband_api,
+                "validate_tenant_custom_domain",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
 
             mock_custom_url.return_value = None
@@ -79,6 +85,12 @@ class TestWristbandAuthLogout:
                 self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
             ) as mock_parse_tenant,
             patch.object(self.wristband_auth._wristband_api, "revoke_refresh_token"),
+            patch.object(
+                self.wristband_auth._wristband_api,
+                "validate_tenant_custom_domain",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
 
             mock_custom_url.return_value = None
@@ -113,6 +125,12 @@ class TestWristbandAuthLogout:
                 self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
             ) as mock_parse_tenant,
             patch.object(self.wristband_auth._wristband_api, "revoke_refresh_token"),
+            patch.object(
+                self.wristband_auth._wristband_api,
+                "validate_tenant_custom_domain",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
 
             mock_custom_url.return_value = None

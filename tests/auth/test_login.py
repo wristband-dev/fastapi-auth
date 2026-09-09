@@ -380,6 +380,9 @@ class TestWristbandAuthLogin:
             patch.object(
                 self.wristband_auth._config_resolver, "get_redirect_uri", new_callable=AsyncMock
             ) as mock_redirect_uri,
+            patch.object(
+                self.wristband_auth._wristband_api, "validate_tenant_custom_domain", new_callable=AsyncMock
+            ) as mock_validate_domain,
             patch("time.time", return_value=1640995200),
         ):
 
@@ -387,8 +390,11 @@ class TestWristbandAuthLogin:
             mock_custom_domain.return_value = False
             mock_parse_tenant.return_value = ""
             mock_redirect_uri.return_value = "https://app.example.com/callback"
+            mock_validate_domain.return_value = True
 
             response = await self.wristband_auth.login(request, login_config)
+
+            mock_validate_domain.assert_called_once_with("tenantA.custom.com")
 
             expected_url = "https://tenantA.custom.com/api/v1/oauth2/authorize"
             _, query_params = assert_redirect_no_cache(response, expected_url)

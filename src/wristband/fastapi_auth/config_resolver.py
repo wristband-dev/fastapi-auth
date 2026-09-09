@@ -7,8 +7,6 @@ from .exceptions import WristbandError
 from .models import AuthConfig, SdkConfiguration
 
 _default_scopes = ["openid", "offline_access", "email"]
-_max_fetch_attempts = 3
-_attempt_delay_seconds = 0.1  # 100 milliseconds
 _tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
 _tenant_placeholder_msg = '"{tenant_name}" or "{tenant_domain}" placeholder'
 
@@ -67,30 +65,17 @@ class ConfigResolver:
                 raise
 
     async def _fetch_sdk_configuration(self) -> SdkConfiguration:
-        """Fetch SDK configuration with retry logic."""
-        last_error: Optional[Exception] = None
+        """
+        Fetch SDK configuration.
 
-        for attempt in range(1, _max_fetch_attempts + 1):
-            try:
-                config = await self.wristband_api.get_sdk_configuration()
-                return config
-            except Exception as error:
-                last_error = error
-
-                # Final attempt failed, break and throw
-                if attempt == _max_fetch_attempts:
-                    break
-
-                # Wait before retrying
-                await asyncio.sleep(_attempt_delay_seconds)
-
-        error_message = f"Failed to fetch SDK configuration after {_max_fetch_attempts} attempts"
-        if last_error:
-            error_message += f": {str(last_error)}"
-        else:
-            error_message += ": Unknown error"
-
-        raise WristbandError("sdk_config_fetch_failed", error_message)
+        Retrying on transient failures (5xx errors, network errors) is already handled
+        one layer down by WristbandApiClient -- see with_retry() in retry.py. By the
+        time an error surfaces here, retries (if any applied) have already been exhausted.
+        """
+        try:
+            return await self.wristband_api.get_sdk_configuration()
+        except Exception as error:
+            raise WristbandError("sdk_config_fetch_failed", f"Failed to fetch SDK configuration: {str(error)}")
 
     def _validate_required_auth_configs(self) -> None:
         """Validate required authentication configuration fields."""

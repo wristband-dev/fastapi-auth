@@ -7,6 +7,7 @@ import pytest
 from wristband.fastapi_auth.client import WristbandApiClient
 from wristband.fastapi_auth.exceptions import InvalidGrantError, WristbandError
 from wristband.fastapi_auth.models import SdkConfiguration, UserInfo, WristbandTokenResponse
+from wristband.fastapi_auth.retry import MAX_API_RETRY_ATTEMPTS
 
 ########################################
 # INITIALIZATION TESTS
@@ -136,6 +137,7 @@ async def test_get_sdk_configuration_error():
 
     # Mock HTTP error
     mock_response = Mock()
+    mock_response.status_code = 404
     mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
         "404 Not Found", request=Mock(), response=mock_response
     )
@@ -363,6 +365,7 @@ async def test_get_userinfo_error():
 
     # Mock HTTP error
     mock_response = Mock()
+    mock_response.status_code = 401
     mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
         "401 Unauthorized", request=Mock(), response=mock_response
     )
@@ -614,3 +617,281 @@ async def test_error_response_parsing():
 
             assert exc_info.value.error == expected_error
             assert exc_info.value.error_description == expected_description
+
+
+########################################
+# RETRY BEHAVIOR TESTS
+########################################
+
+
+def _mock_response(status_code: int, json_data: dict = None, text: str = "") -> Mock:
+    mock_response = Mock()
+    mock_response.status_code = status_code
+    if json_data is not None:
+        mock_response.json.return_value = json_data
+    mock_response.text = text
+    if status_code >= 400:
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            f"{status_code} error", request=Mock(), response=mock_response
+        )
+    else:
+        mock_response.raise_for_status = Mock()
+    return mock_response
+
+
+@pytest.mark.asyncio
+async def test_get_sdk_configuration_retries_on_5xx_and_eventually_succeeds():
+    """Test get_sdk_configuration retries transient failures and succeeds."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_500 = _mock_response(500)
+    mock_200 = _mock_response(
+        200,
+        {
+            "loginUrl": "https://auth.example.com/login",
+            "redirectUri": "https://app.example.com/callback",
+            "customApplicationLoginPageUrl": None,
+            "isApplicationCustomDomainActive": False,
+            "loginUrlTenantDomainSuffix": None,
+        },
+    )
+
+    with patch.object(client.client, "get", side_effect=[mock_500, mock_500, mock_200]) as mock_get:
+        result = await client.get_sdk_configuration()
+
+    assert isinstance(result, SdkConfiguration)
+    assert mock_get.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_get_sdk_configuration_does_not_retry_on_4xx():
+    """Test get_sdk_configuration does not retry a 4xx error."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_404 = _mock_response(404)
+
+    with patch.object(client.client, "get", return_value=mock_404) as mock_get:
+        with pytest.raises(WristbandError):
+            await client.get_sdk_configuration()
+
+    assert mock_get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_tokens_retries_on_5xx_and_eventually_succeeds():
+    """Test get_tokens retries transient failures and succeeds."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_500 = _mock_response(500)
+    mock_200 = _mock_response(
+        200,
+        {
+            "access_token": "access123",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "refresh123",
+            "id_token": "id123",
+            "scope": "openid",
+        },
+    )
+
+    with patch.object(client.client, "post", side_effect=[mock_500, mock_500, mock_200]) as mock_post:
+        result = await client.get_tokens("code123", "https://app.com/callback", "verifier123")
+
+    assert isinstance(result, WristbandTokenResponse)
+    assert mock_post.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_get_tokens_exhausts_retries_on_persistent_5xx():
+    """Test get_tokens retries up to the max attempts on a persistent 5xx, then maps the error."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_500 = _mock_response(500, {"error": "server_error", "error_description": "Down for maintenance"})
+
+    with patch.object(client.client, "post", return_value=mock_500) as mock_post:
+        with pytest.raises(WristbandError) as exc_info:
+            await client.get_tokens("code123", "https://app.com/callback", "verifier123")
+
+    assert mock_post.call_count == MAX_API_RETRY_ATTEMPTS
+    assert exc_info.value.error == "server_error"
+    assert exc_info.value.error_description == "Down for maintenance"
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_exhausts_retries_on_persistent_5xx():
+    """Test refresh_token retries up to the max attempts on a persistent 5xx, then maps the error."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_500 = _mock_response(500, {"error": "server_error", "error_description": "Down for maintenance"})
+
+    with patch.object(client.client, "post", return_value=mock_500) as mock_post:
+        with pytest.raises(WristbandError) as exc_info:
+            await client.refresh_token("refresh123")
+
+    assert mock_post.call_count == MAX_API_RETRY_ATTEMPTS
+    assert exc_info.value.error == "server_error"
+    assert exc_info.value.error_description == "Down for maintenance"
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_retries_on_5xx_and_eventually_succeeds():
+    """Test refresh_token retries transient failures and succeeds."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_500 = _mock_response(500)
+    mock_200 = _mock_response(
+        200,
+        {
+            "access_token": "new_access123",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "new_refresh123",
+            "id_token": "new_id123",
+            "scope": "openid",
+        },
+    )
+
+    with patch.object(client.client, "post", side_effect=[mock_500, mock_500, mock_200]) as mock_post:
+        result = await client.refresh_token("refresh123")
+
+    assert isinstance(result, WristbandTokenResponse)
+    assert mock_post.call_count == 3
+
+
+########################################
+# NON-JSON ERROR BODY TESTS
+########################################
+#
+# Regression: an error response whose body isn't JSON (e.g. a plain-text or HTML error
+# page from a proxy/CDN) must not crash with a JSON decoding error, and a 4xx with such
+# a body must still be treated as non-retryable.
+
+
+@pytest.mark.asyncio
+async def test_get_tokens_non_json_4xx_body_does_not_crash_and_is_not_retried():
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_response = _mock_response(401, json_data=None, text="Unauthorized")
+    mock_response.json.side_effect = ValueError("not valid json")
+
+    with patch.object(client.client, "post", return_value=mock_response) as mock_post:
+        with pytest.raises(WristbandError) as exc_info:
+            await client.get_tokens("code123", "https://app.com/callback", "verifier123")
+
+    assert mock_post.call_count == 1
+    assert exc_info.value.error == "unknown_error"
+    assert exc_info.value.error_description == "Unknown error"
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_non_json_4xx_body_does_not_crash_and_is_not_retried():
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_response = _mock_response(400, json_data=None, text="<html>Bad Request</html>")
+    mock_response.json.side_effect = ValueError("not valid json")
+
+    with patch.object(client.client, "post", return_value=mock_response) as mock_post:
+        with pytest.raises(WristbandError):
+            await client.refresh_token("refresh123")
+
+    assert mock_post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_tokens_non_json_5xx_body_is_still_retried():
+    """A non-JSON body on a 5xx should still be retried -- only the final mapping is affected."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_500 = _mock_response(500, json_data=None, text="Internal Server Error")
+    mock_500.json.side_effect = ValueError("not valid json")
+
+    with patch.object(client.client, "post", return_value=mock_500) as mock_post:
+        with pytest.raises(WristbandError) as exc_info:
+            await client.get_tokens("code123", "https://app.com/callback", "verifier123")
+
+    assert mock_post.call_count == MAX_API_RETRY_ATTEMPTS
+    assert exc_info.value.error == "unknown_error"
+
+
+########################################
+# VALIDATE_TENANT_CUSTOM_DOMAIN TESTS
+########################################
+
+
+@pytest.mark.asyncio
+async def test_validate_tenant_custom_domain_valid():
+    """Test validate_tenant_custom_domain returns True for a valid domain."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_response = _mock_response(200, {"valid": True})
+
+    with patch.object(client.client, "post", return_value=mock_response) as mock_post:
+        result = await client.validate_tenant_custom_domain("tenant.custom.com")
+
+    assert result is True
+    mock_post.assert_called_once_with(
+        "https://app.wristband.dev/api/v1/custom-domains/validate",
+        headers=client._json_headers,
+        json={"tenantCustomDomain": "tenant.custom.com"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_tenant_custom_domain_invalid():
+    """Test validate_tenant_custom_domain returns False for an invalid/unverified domain."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_response = _mock_response(200, {"valid": False})
+
+    with patch.object(client.client, "post", return_value=mock_response):
+        result = await client.validate_tenant_custom_domain("unverified.custom.com")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_validate_tenant_custom_domain_empty_domain():
+    """Test validate_tenant_custom_domain fails with an empty domain."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    with pytest.raises(ValueError, match="Tenant custom domain is required"):
+        await client.validate_tenant_custom_domain("")
+
+
+@pytest.mark.asyncio
+async def test_validate_tenant_custom_domain_whitespace_domain():
+    """Test validate_tenant_custom_domain fails with a whitespace-only domain."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    with pytest.raises(ValueError, match="Tenant custom domain is required"):
+        await client.validate_tenant_custom_domain("   ")
+
+
+@pytest.mark.asyncio
+async def test_validate_tenant_custom_domain_retries_on_5xx_and_eventually_succeeds():
+    """Test validate_tenant_custom_domain retries transient failures and succeeds."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_500 = _mock_response(500)
+    mock_200 = _mock_response(200, {"valid": True})
+
+    with patch.object(client.client, "post", side_effect=[mock_500, mock_500, mock_200]) as mock_post:
+        result = await client.validate_tenant_custom_domain("tenant.custom.com")
+
+    assert result is True
+    assert mock_post.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_validate_tenant_custom_domain_does_not_retry_on_4xx():
+    """Test validate_tenant_custom_domain does not retry a 4xx error."""
+    client = WristbandApiClient("app.wristband.dev", "client123", "secret456")
+
+    mock_400 = _mock_response(400, {"message": "invalid_domain_name"})
+
+    with patch.object(client.client, "post", return_value=mock_400) as mock_post:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.validate_tenant_custom_domain("not a real domain")
+
+    assert mock_post.call_count == 1
