@@ -259,8 +259,8 @@ async def test_refresh_token_if_expired_4xx_error_no_json(wristband_auth):
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_5xx_error_with_retries(wristband_auth):
-    """Test that 5xx errors are retried up to the maximum attempts."""
+async def test_refresh_token_if_expired_5xx_error(wristband_auth):
+    """Test that a 5xx error surfaces as unexpected_error without retrying at this layer."""
     past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
 
     # Mock 5xx HTTP error
@@ -269,71 +269,31 @@ async def test_refresh_token_if_expired_5xx_error_with_retries(wristband_auth):
     http_error = httpx.HTTPStatusError("500 Internal Server Error", request=Mock(), response=mock_response)
 
     with patch.object(wristband_auth._wristband_api, "refresh_token", side_effect=http_error) as mock_refresh:
-        with patch("time.sleep") as mock_sleep:  # Mock sleep to speed up test
-            with pytest.raises(WristbandError) as exc_info:
-                await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
+        with pytest.raises(WristbandError) as exc_info:
+            await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
 
-    # Verify API was called maximum number of times (3 attempts: initial + 2 retries)
-    assert mock_refresh.call_count == 3
-    mock_refresh.assert_called_with("refresh_token")
-
-    # Verify sleep was called for retries (2 times)
-    assert mock_sleep.call_count == 2
-    mock_sleep.assert_called_with(0.1)  # _token_refresh_retry_timeout
+    # Retrying on transient failures (5xx errors, network errors) is already handled
+    # one layer down by WristbandApiClient (see with_retry() in retry.py), so a single
+    # call here should only ever hit the API once.
+    mock_refresh.assert_called_once_with("refresh_token")
 
     assert exc_info.value.error == "unexpected_error"
     assert exc_info.value.error_description == "Unexpected Error"
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_5xx_error_eventual_success(wristband_auth, mock_wristband_token_response):
-    """Test that 5xx errors are retried and eventually succeed."""
-    past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
-
-    # Mock 5xx HTTP error for first two attempts, then success
-    mock_response = Mock()
-    mock_response.status_code = 500
-    http_error = httpx.HTTPStatusError("500 Internal Server Error", request=Mock(), response=mock_response)
-
-    with patch.object(
-        wristband_auth._wristband_api,
-        "refresh_token",
-        side_effect=[http_error, http_error, mock_wristband_token_response],
-    ) as mock_refresh:
-        with patch("time.sleep") as mock_sleep:
-            with patch("time.time", return_value=1000000):
-                result = await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
-
-    # Verify API was called 3 times (2 failures + 1 success)
-    assert mock_refresh.call_count == 3
-
-    # Verify sleep was called 2 times (for the 2 retries)
-    assert mock_sleep.call_count == 2
-
-    # Verify successful result
-    assert result is not None
-    assert isinstance(result, TokenData)
-    assert result.access_token == "new_access_token"
-
-
-@pytest.mark.asyncio
-async def test_refresh_token_if_expired_other_exception_with_retries(wristband_auth):
-    """Test that other exceptions are retried up to the maximum attempts."""
+async def test_refresh_token_if_expired_other_exception(wristband_auth):
+    """Test that an unrecognized exception surfaces as unexpected_error without retrying here."""
     past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
 
     # Mock a generic exception (not HTTPStatusError or InvalidGrantError)
     generic_error = Exception("Network error")
 
     with patch.object(wristband_auth._wristband_api, "refresh_token", side_effect=generic_error) as mock_refresh:
-        with patch("time.sleep") as mock_sleep:
-            with pytest.raises(WristbandError) as exc_info:
-                await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
+        with pytest.raises(WristbandError) as exc_info:
+            await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
 
-    # Verify API was called maximum number of times
-    assert mock_refresh.call_count == 3
-
-    # Verify sleep was called for retries
-    assert mock_sleep.call_count == 2
+    mock_refresh.assert_called_once_with("refresh_token")
 
     assert exc_info.value.error == "unexpected_error"
     assert exc_info.value.error_description == "Unexpected Error"
@@ -372,14 +332,6 @@ async def test_refresh_token_if_expired_milliseconds_precision(wristband_auth, m
 
     # Should refresh since token is expired by 1ms
     assert result is not None
-
-
-@pytest.mark.asyncio
-async def test_refresh_token_if_expired_retry_configuration(wristband_auth):
-    """Test that retry configuration is respected."""
-    # Verify the retry configuration constants
-    assert wristband_auth._token_refresh_retries == 2
-    assert wristband_auth._token_refresh_retry_timeout == 0.1
 
 
 @pytest.mark.asyncio

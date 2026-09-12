@@ -516,25 +516,25 @@ class TestConfigResolverSdkConfigFetching:
             mock_client.get_sdk_configuration.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_sdk_config_retry_logic(self):
-        """Test retry logic for SDK config fetching."""
+    async def test_sdk_config_fetch_success_passthrough(self):
+        """Test that a successful fetch is returned as-is (no retry loop at this layer)."""
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
             mock_client = Mock()
-            # Fail twice, succeed on third attempt
-            mock_client.get_sdk_configuration = AsyncMock(
-                side_effect=[Exception("Network error 1"), Exception("Network error 2"), self.valid_sdk_config]
-            )
+            mock_client.get_sdk_configuration = AsyncMock(return_value=self.valid_sdk_config)
             mock_client_class.return_value = mock_client
 
             resolver = ConfigResolver(self.config)
 
             result = await resolver.get_login_url()
             assert result == "https://sdk.example.com/login"
-            assert mock_client.get_sdk_configuration.call_count == 3
+            # Retrying on transient failures is handled one layer down by
+            # WristbandApiClient (see with_retry() in retry.py), so a single
+            # successful call here should only ever hit the API once.
+            assert mock_client.get_sdk_configuration.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_sdk_config_fetch_failure_after_max_retries(self):
-        """Test failure after maximum retry attempts."""
+    async def test_sdk_config_fetch_failure_does_not_retry_at_this_layer(self):
+        """Test that a fetch failure surfaces immediately without retrying here."""
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
             mock_client = Mock()
             mock_client.get_sdk_configuration = AsyncMock(side_effect=Exception("Persistent network error"))
@@ -546,8 +546,11 @@ class TestConfigResolverSdkConfigFetching:
                 await resolver.get_login_url()
 
             assert exc_info.value.error == "sdk_config_fetch_failed"
-            assert "Failed to fetch SDK configuration after 3 attempts" in exc_info.value.error_description
-            assert mock_client.get_sdk_configuration.call_count == 3
+            assert "Failed to fetch SDK configuration: Persistent network error" == exc_info.value.error_description
+            # Retrying on transient failures is handled one layer down by
+            # WristbandApiClient (see with_retry() in retry.py), so a failure here
+            # should only hit the API once at this layer.
+            assert mock_client.get_sdk_configuration.call_count == 1
 
     @pytest.mark.asyncio
     async def test_preload_sdk_config(self):
@@ -606,8 +609,6 @@ class TestConfigResolverSdkConfigFetching:
             mock_client.get_sdk_configuration = AsyncMock(
                 side_effect=[
                     Exception("First error"),
-                    Exception("Second error"),
-                    Exception("Third error"),
                     self.valid_sdk_config,  # Success on retry
                 ]
             )
@@ -615,15 +616,15 @@ class TestConfigResolverSdkConfigFetching:
 
             resolver = ConfigResolver(self.config)
 
-            # First attempt should fail after 3 retries
+            # First attempt should fail immediately (no retry loop at this layer)
             with pytest.raises(WristbandError):
                 await resolver.get_login_url()
-            assert mock_client.get_sdk_configuration.call_count == 3
+            assert mock_client.get_sdk_configuration.call_count == 1
 
             # Second attempt should succeed
             result = await resolver.get_redirect_uri()
             assert result == "https://sdk.example.com/callback"
-            assert mock_client.get_sdk_configuration.call_count == 4
+            assert mock_client.get_sdk_configuration.call_count == 2
 
 
 class TestConfigResolverDynamicValidation:

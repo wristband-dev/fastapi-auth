@@ -1,3 +1,6 @@
+from typing import Optional
+
+
 class WristbandError(Exception):
     """
     Base exception class for all Wristband-related errors.
@@ -8,19 +11,23 @@ class WristbandError(Exception):
     Attributes:
         error (str): The error code or type identifier.
         error_description (str): Optional detailed description of the error.
+        status_code (Optional[int]): The HTTP status code that caused this error, if known.
+            Used internally to classify whether a failed request is retryable.
     """
 
-    def __init__(self, error: str, error_description: str = "") -> None:
+    def __init__(self, error: str, error_description: str = "", status_code: Optional[int] = None) -> None:
         """
         Initialize a WristbandError with an error code and optional description.
 
         Args:
             error: The error code or type (e.g., "invalid_grant", "unauthorized").
             error_description: Optional detailed description of what went wrong.
+            status_code: Optional HTTP status code associated with this error.
         """
         super().__init__(f"{error}: {error_description}")
         self.error = error
         self.error_description = error_description
+        self.status_code = status_code
 
     def get_error(self) -> str:
         """

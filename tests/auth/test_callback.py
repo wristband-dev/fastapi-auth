@@ -478,6 +478,12 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(self.wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(self.wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
+            patch.object(
+                self.wristband_auth._wristband_api,
+                "validate_tenant_custom_domain",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_validate_domain,
             patch("time.time", return_value=1640995200.0),
         ):
 
@@ -486,6 +492,7 @@ class TestWristbandAuthCallback:
 
             result = await self.wristband_auth.callback(request)
 
+        mock_validate_domain.assert_called_once_with("custom.tenant.com")
         assert isinstance(result, CompletedCallbackResult)
         assert result.type == CallbackResultType.COMPLETED
         assert result.callback_data is not None
@@ -751,6 +758,12 @@ class TestWristbandAuthCallback:
             patch.object(
                 self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
             ) as mock_parse_tenant,
+            patch.object(
+                self.wristband_auth._wristband_api,
+                "validate_tenant_custom_domain",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
