@@ -76,24 +76,6 @@ class WristbandAuth:
         )
         self._login_state_encryptor = DataEncryptor(secret_key=self._config_resolver.get_login_state_secret())
 
-    async def _resolve_valid_tenant_custom_domain(self, tenant_custom_domain: str) -> str:
-        """
-        Resolves a tenant custom domain to itself when it is verified and belongs to your
-        Wristband application. Resolves to an empty string otherwise, so the caller skips
-        over it and falls through to the next domain in its resolution precedence order.
-
-        Args:
-            tenant_custom_domain: The tenant custom domain to validate.
-
-        Returns:
-            The tenant custom domain when valid, otherwise an empty string.
-        """
-        if not tenant_custom_domain:
-            return ""
-
-        is_valid = await self._wristband_api.validate_tenant_custom_domain(tenant_custom_domain)
-        return tenant_custom_domain if is_valid else ""
-
     #################################
     #  DISCOVER
     #################################
@@ -765,6 +747,24 @@ class WristbandAuth:
             raise TypeError("More than one [tenant_custom_domain] query parameter was encountered")
 
         return tenant_custom_domain_param[0] if tenant_custom_domain_param else ""
+
+    async def _resolve_valid_tenant_custom_domain(self, tenant_custom_domain: str) -> str:
+        """
+        Resolves a tenant custom domain to itself when it is verified and belongs to your
+        Wristband application. Resolves to an empty string otherwise, so the caller skips
+        over it and falls through to the next domain in its resolution precedence order.
+
+        Args:
+            tenant_custom_domain: The tenant custom domain to validate.
+
+        Returns:
+            The tenant custom domain when valid, otherwise an empty string.
+        """
+        if not tenant_custom_domain:
+            return ""
+
+        is_valid = await self._wristband_api.validate_tenant_custom_domain(tenant_custom_domain)
+        return tenant_custom_domain if is_valid else ""
 
     def _resolve_tenant_name(self, request: Request, parse_tenant_from_root_domain: Optional[str]) -> str:
         if parse_tenant_from_root_domain and parse_tenant_from_root_domain.strip():
