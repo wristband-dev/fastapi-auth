@@ -917,7 +917,7 @@ The return URL is stored in the Login State Cookie, and it is available to you i
 To prevent open redirects, `callback()` validates the return URL before including it in the callback data. A return URL that fails validation is left out of the callback data, and the flow continues without it:
 
 - Relative paths (e.g. `/settings`) resolve against the current request's host.
-- The scheme must match the request's scheme, which blocks downgrades like `https` to `http`.
+- The scheme must match the request's scheme, which blocks downgrades like `https` to `http`. Behind a reverse proxy that terminates TLS, run Uvicorn with `--proxy-headers` and `--forwarded-allow-ips` so that `request.url.scheme` reflects the original `https` scheme.
 - The hostname must be either your application's root domain (when `login_url` contains the `{tenant_name}` placeholder) or the request's host.
 - When `application_authorization_requests_enabled` is `True` and `login_url` contains the `{tenant_name}` placeholder, a return URL on the bare root domain is rewritten to the tenant's subdomain (e.g. `yourapp.io` to `acme.yourapp.io`).
 
