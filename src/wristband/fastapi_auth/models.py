@@ -14,6 +14,11 @@ class AuthConfig(BaseModel):
     Represents the configuration for Wristband authentication.
 
     Attributes:
+        application_authorization_requests_enabled: Indicates whether application-level authorization requests
+            are enabled. Defaults to False. If True, for login and logout scenarios where neither a tenant name nor
+            a tenant custom domain can be deduced, the user is redirected to the Wristband Authorize Endpoint using
+            the application vanity domain to initiate an app-level authorization request. This field is
+            auto-configurable.
         auto_configure_enabled: Flag that tells the SDK to automatically set some of the SDK configuration values by
             calling to Wristband's SDK Auto-Configuration Endpoint. Any manually provided configurations will take
             precedence over the configs returned from the endpoint. Auto-configure is enabled by default. When disabled,
@@ -33,6 +38,10 @@ class AuthConfig(BaseModel):
         dangerously_disable_secure_cookies: If set to True, the "Secure" attribute will not be
             included in any cookie settings. This should only be done when testing in local
             development (if necessary).
+        fallback_login_url: Fallback login URL to redirect to in the event the tenant placeholder in your
+            login_url cannot be resolved (e.g. https://yourapp.io/auth/login). Only applicable when
+            application_authorization_requests_enabled is True. Must not contain the tenant placeholder.
+            This field is auto-configurable.
         is_application_custom_domain_active: Indicates whether an application-level custom domain
             is active in your Wristband application. This field is auto-configurable.
         parse_tenant_from_root_domain: The root domain for your application from which to parse
@@ -44,12 +53,14 @@ class AuthConfig(BaseModel):
             expiration during API calls. Defaults to 60 seconds.
     """
 
+    application_authorization_requests_enabled: Optional[bool] = None
     client_id: str
     client_secret: str
     wristband_application_vanity_domain: str
     auto_configure_enabled: bool = True
     custom_application_login_page_url: Optional[str] = None
     dangerously_disable_secure_cookies: bool = False
+    fallback_login_url: Optional[str] = None
     is_application_custom_domain_active: Optional[bool] = None
     login_state_secret: Optional[str] = None
     login_url: Optional[str] = None
@@ -64,8 +75,14 @@ class SdkConfiguration(BaseModel):
     Represents the SDK configuration returned from Wristband's SDK Auto-Configuration Endpoint.
 
     Attributes:
+        application_authorization_requests_enabled: Indicates whether application-level authorization requests
+            are enabled. If true, for login and logout scenarios where neither a tenant name nor a tenant custom
+            domain can be deduced, the user is redirected to the Wristband Authorize Endpoint using the
+            application vanity domain to initiate an app-level authorization request.
         custom_application_login_page_url: Custom application login (tenant discovery) page URL if you are
             self-hosting the application login/tenant discovery UI.
+        fallback_login_url: Fallback login URL to redirect to when the tenant placeholder in the login URL
+            cannot be resolved. Only applicable when application-level authorization requests are enabled.
         is_application_custom_domain_active: Indicates whether an application-level custom domain
             is active in your Wristband application.
         login_url: The URL for initiating the login request.
@@ -73,9 +90,11 @@ class SdkConfiguration(BaseModel):
         redirect_uri: The redirect URI for callback after authentication.
     """
 
+    application_authorization_requests_enabled: bool
     login_url: str
     redirect_uri: Optional[str] = None
     is_application_custom_domain_active: bool
+    fallback_login_url: Optional[str] = None
     custom_application_login_page_url: Optional[str] = None
     login_url_tenant_domain_suffix: Optional[str] = None
 
@@ -91,6 +110,8 @@ class SdkConfiguration(BaseModel):
             An SdkConfiguration instance with the parsed configuration data.
         """
         return SdkConfiguration(
+            application_authorization_requests_enabled=response.get("applicationAuthorizationRequestsEnabled", False),
+            fallback_login_url=response.get("fallbackLoginUrl"),
             login_url=response["loginUrl"],
             redirect_uri=response.get("redirectUri"),
             is_application_custom_domain_active=response.get("isApplicationCustomDomainActive", False),

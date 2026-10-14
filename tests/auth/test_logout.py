@@ -13,6 +13,7 @@ class TestWristbandAuthLogout:
     def setup_method(self) -> None:
         """Set up test fixtures."""
         self.auth_config = AuthConfig(
+            auto_configure_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
@@ -176,6 +177,7 @@ class TestWristbandAuthLogout:
     async def test_logout_with_subdomain_parsing_priority_4a(self) -> None:
         """Test logout uses subdomain parsing when enabled."""
         config_with_subdomain = AuthConfig(
+            auto_configure_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,

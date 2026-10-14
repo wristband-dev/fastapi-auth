@@ -1,5 +1,6 @@
 import asyncio
 import re
+from typing import Optional
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -377,6 +378,7 @@ class TestConfigResolverDynamicConfigurations:
     def setup_method(self):
         """Set up test fixtures."""
         self.valid_sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             custom_application_login_page_url="https://sdk.example.com/custom-login",
@@ -434,6 +436,127 @@ class TestConfigResolverDynamicConfigurations:
             assert await resolver.get_is_application_custom_domain_active() is True
             assert await resolver.get_parse_tenant_from_root_domain() == ""
 
+    def _create_resolver(self, config: AuthConfig, sdk_config: SdkConfiguration) -> ConfigResolver:
+        """Create a resolver whose SDK config fetch returns the given SdkConfiguration."""
+        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
+            mock_client_class.return_value = mock_client
+            return ConfigResolver(config)
+
+    def _app_auth_sdk_config(self, enabled: bool, fallback_login_url: Optional[str]) -> SdkConfiguration:
+        """Create an SdkConfiguration with the given app-level authorization request values."""
+        return SdkConfiguration(
+            application_authorization_requests_enabled=enabled,
+            fallback_login_url=fallback_login_url,
+            login_url="https://sdk.example.com/login",
+            redirect_uri="https://sdk.example.com/callback",
+            is_application_custom_domain_active=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_app_auth_requests_enabled_manual_true(self):
+        """Test that a manual True is returned for application_authorization_requests_enabled."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            application_authorization_requests_enabled=True,
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(False, None))
+
+        assert await resolver.get_application_authorization_requests_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_app_auth_requests_enabled_manual_false_overrides_sdk_true(self):
+        """Test that a manual False is not overridden by an auto-configured True."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            application_authorization_requests_enabled=False,
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(True, None))
+
+        assert await resolver.get_application_authorization_requests_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_app_auth_requests_enabled_unset_uses_sdk_config(self):
+        """Test that application_authorization_requests_enabled falls back to the SDK config when unset."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(True, None))
+
+        assert await resolver.get_application_authorization_requests_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_app_auth_requests_enabled_unset_with_auto_config_disabled(self):
+        """Test that application_authorization_requests_enabled defaults to False when auto-config is disabled."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            auto_configure_enabled=False,
+            login_url="https://manual.com/login",
+            redirect_uri="https://manual.com/callback",
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(True, None))
+
+        assert await resolver.get_application_authorization_requests_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_fallback_login_url_manual_takes_precedence(self):
+        """Test that a manual fallback_login_url takes precedence over the SDK config."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            fallback_login_url="https://manual.com/login",
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(False, "https://sdk.example.com/login"))
+
+        assert await resolver.get_fallback_login_url() == "https://manual.com/login"
+
+    @pytest.mark.asyncio
+    async def test_fallback_login_url_unset_uses_sdk_config(self):
+        """Test that fallback_login_url falls back to the SDK config when unset."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(False, "https://sdk.example.com/login"))
+
+        assert await resolver.get_fallback_login_url() == "https://sdk.example.com/login"
+
+    @pytest.mark.asyncio
+    async def test_fallback_login_url_sdk_none_returns_empty_string(self):
+        """Test that a null fallbackLoginUrl from the SDK config resolves to an empty string."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(False, None))
+
+        assert await resolver.get_fallback_login_url() == ""
+
+    @pytest.mark.asyncio
+    async def test_fallback_login_url_manual_empty_string_uses_sdk_config(self):
+        """Test that an empty manual fallback_login_url is treated as unset."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            fallback_login_url="",
+        )
+        resolver = self._create_resolver(config, self._app_auth_sdk_config(False, "https://sdk.example.com/login"))
+
+        assert await resolver.get_fallback_login_url() == "https://sdk.example.com/login"
+
     @pytest.mark.asyncio
     async def test_auto_config_disabled_fallbacks(self):
         """Test fallback values when auto-config is disabled."""
@@ -455,6 +578,7 @@ class TestConfigResolverDynamicConfigurations:
     async def test_auto_config_none_values(self):
         """Test handling of None values from auto-config."""
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             custom_application_login_page_url=None,
@@ -489,6 +613,7 @@ class TestConfigResolverSdkConfigFetching:
             wristband_application_vanity_domain="test.wristband.dev",
         )
         self.valid_sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             is_application_custom_domain_active=True,
@@ -642,7 +767,10 @@ class TestConfigResolverDynamicValidation:
     async def test_validate_missing_login_url_in_sdk_config(self):
         """Test validation fails when SDK config missing login_url."""
         invalid_sdk_config = SdkConfiguration(
-            login_url="", redirect_uri="https://sdk.example.com/callback", is_application_custom_domain_active=False
+            application_authorization_requests_enabled=False,
+            login_url="",
+            redirect_uri="https://sdk.example.com/callback",
+            is_application_custom_domain_active=False,
         )
 
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
@@ -662,7 +790,10 @@ class TestConfigResolverDynamicValidation:
     async def test_validate_missing_redirect_uri_in_sdk_config(self):
         """Test validation fails when SDK config missing redirect_uri."""
         invalid_sdk_config = SdkConfiguration(
-            login_url="https://sdk.example.com/login", redirect_uri="", is_application_custom_domain_active=False
+            application_authorization_requests_enabled=False,
+            login_url="https://sdk.example.com/login",
+            redirect_uri="",
+            is_application_custom_domain_active=False,
         )
 
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
@@ -686,7 +817,10 @@ class TestConfigResolverDynamicValidation:
     async def test_manual_redirect_uri_overrides_missing_sdk_redirect_uri(self):
         """Test that manual redirect_uri succeeds even when SDK config returns empty redirect_uri."""
         invalid_sdk_config = SdkConfiguration(
-            login_url="https://sdk.example.com/login", redirect_uri="", is_application_custom_domain_active=False
+            application_authorization_requests_enabled=False,
+            login_url="https://sdk.example.com/login",
+            redirect_uri="",
+            is_application_custom_domain_active=False,
         )
 
         config = AuthConfig(
@@ -710,6 +844,7 @@ class TestConfigResolverDynamicValidation:
         """Test validation of resolved config with tenant domain parsing."""
         # SDK config without tenant tokens
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             is_application_custom_domain_active=False,
@@ -742,6 +877,7 @@ class TestConfigResolverDynamicValidation:
         """Test validation fails when tenant token present but parsing disabled."""
         # SDK config with tenant tokens
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://{tenant_name}.sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             is_application_custom_domain_active=False,
@@ -790,6 +926,7 @@ class TestConfigResolverEdgeCases:
 
         # Test None with auto-config False
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             is_application_custom_domain_active=False,
@@ -811,6 +948,7 @@ class TestConfigResolverEdgeCases:
     async def test_empty_string_values(self):
         """Test handling of empty string values."""
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             custom_application_login_page_url=None,
@@ -838,6 +976,7 @@ class TestConfigResolverEdgeCases:
     async def test_mixed_manual_and_auto_config(self):
         """Test mixed manual and auto-configuration."""
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             custom_application_login_page_url=None,
@@ -900,6 +1039,7 @@ class TestConfigResolverEdgeCases:
 
         # SDK config would fail validation if used
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",  # No tenant token
             redirect_uri="https://{tenant_name}.sdk.com/callback",
             is_application_custom_domain_active=True,
@@ -932,6 +1072,7 @@ class TestConfigResolverEdgeCases:
     async def test_concurrent_preload_and_get_requests(self):
         """Test concurrent preload and getter requests."""
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",
             is_application_custom_domain_active=False,
@@ -1037,6 +1178,7 @@ class TestConfigResolverEdgeCases:
     async def test_validate_resolved_redirect_uri_missing_token_lines(self):
         """Test resolved config validation when redirect_uri missing tenant token."""
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://{tenant_name}.sdk.example.com/login",
             redirect_uri="https://sdk.example.com/callback",  # missing tenant token
             is_application_custom_domain_active=False,
@@ -1066,6 +1208,7 @@ class TestConfigResolverEdgeCases:
     async def test_validate_resolved_redirect_uri_has_token_without_parsing(self):
         """Test resolved config validation when redirect_uri has token but parsing disabled."""
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://sdk.example.com/login",  # no tenant token
             redirect_uri="https://{tenant_name}.sdk.example.com/callback",  # has tenant token
             is_application_custom_domain_active=False,
@@ -1148,6 +1291,7 @@ class TestConfigResolverBackwardCompatibility:
     async def test_tenant_domain_in_sdk_config_still_works(self):
         """Test that SDK config with {tenant_domain} placeholder still works."""
         sdk_config = SdkConfiguration(
+            application_authorization_requests_enabled=False,
             login_url="https://{tenant_domain}.sdk.example.com/login",
             redirect_uri="https://{tenant_domain}.sdk.example.com/callback",
             is_application_custom_domain_active=False,
@@ -1170,3 +1314,209 @@ class TestConfigResolverBackwardCompatibility:
             # Should not raise validation error
             result = await resolver.get_login_url()
             assert result == "https://{tenant_domain}.sdk.example.com/login"
+
+
+class TestConfigResolverFallbackLoginUrlValidation:
+    """Test cases for fallback_login_url validation with application-level authorization requests."""
+
+    def _strict_config(self, **overrides) -> AuthConfig:
+        """Create an AuthConfig with auto-configure disabled and tenant subdomains enabled."""
+        values = {
+            "client_id": "test_client",
+            "client_secret": "test_secret",
+            "wristband_application_vanity_domain": "test.wristband.dev",
+            "auto_configure_enabled": False,
+            "login_url": "https://{tenant_name}.example.com/login",
+            "redirect_uri": "https://{tenant_name}.example.com/callback",
+            "parse_tenant_from_root_domain": "example.com",
+        }
+        values.update(overrides)
+        return AuthConfig(**values)
+
+    def _sdk_config(self, **overrides) -> SdkConfiguration:
+        """Create an SdkConfiguration that uses tenant subdomains."""
+        values = {
+            "application_authorization_requests_enabled": False,
+            "fallback_login_url": None,
+            "login_url": "https://{tenant_name}.sdk.example.com/login",
+            "redirect_uri": "https://{tenant_name}.sdk.example.com/callback",
+            "is_application_custom_domain_active": False,
+            "login_url_tenant_domain_suffix": "sdk.example.com",
+        }
+        values.update(overrides)
+        return SdkConfiguration(**values)
+
+    async def _preload(self, config: AuthConfig, sdk_config: SdkConfiguration) -> None:
+        """Construct a resolver and load the given SDK config, which runs the resolved-value validation."""
+        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
+            mock_client_class.return_value = mock_client
+            await ConfigResolver(config).preload_sdk_config()
+
+    # Auto-configure disabled (strict)
+
+    def test_strict_requires_fallback_when_enabled_and_login_url_has_placeholder(self):
+        """Test fallback_login_url is required when enabled and login_url has the tenant placeholder."""
+        config = self._strict_config(application_authorization_requests_enabled=True)
+
+        with pytest.raises(TypeError, match="The \\[fallback_login_url\\] config must have a value"):
+            ConfigResolver(config)
+
+    def test_strict_requires_fallback_when_whitespace_only(self):
+        """Test a whitespace-only fallback_login_url counts as missing."""
+        config = self._strict_config(application_authorization_requests_enabled=True, fallback_login_url="   ")
+
+        with pytest.raises(TypeError, match="The \\[fallback_login_url\\] config must have a value"):
+            ConfigResolver(config)
+
+    def test_strict_does_not_require_fallback_when_disabled(self):
+        """Test fallback_login_url is not required when application authorization requests are disabled."""
+        config = self._strict_config(application_authorization_requests_enabled=False)
+
+        ConfigResolver(config)
+
+    def test_strict_does_not_require_fallback_when_login_url_has_no_placeholder(self):
+        """Test fallback_login_url is not required when login_url has no tenant placeholder."""
+        config = self._strict_config(
+            application_authorization_requests_enabled=True,
+            login_url="https://example.com/login",
+            redirect_uri="https://example.com/callback",
+            parse_tenant_from_root_domain=None,
+        )
+
+        ConfigResolver(config)
+
+    @pytest.mark.parametrize("placeholder", ["{tenant_name}", "{tenant_domain}"])
+    def test_strict_rejects_fallback_with_placeholder(self, placeholder):
+        """Test fallback_login_url cannot contain the tenant placeholder."""
+        config = self._strict_config(
+            application_authorization_requests_enabled=True,
+            fallback_login_url=f"https://{placeholder}.example.com/login",
+        )
+
+        with pytest.raises(TypeError, match="The \\[fallback_login_url\\] cannot contain the"):
+            ConfigResolver(config)
+
+    def test_strict_accepts_valid_fallback(self):
+        """Test a valid fallback_login_url passes validation."""
+        config = self._strict_config(
+            application_authorization_requests_enabled=True, fallback_login_url="https://example.com/login"
+        )
+
+        ConfigResolver(config)
+
+    # Auto-configure enabled (partial, manual values only)
+
+    def test_partial_rejects_manual_fallback_with_placeholder(self):
+        """Test a manually provided fallback_login_url cannot contain the tenant placeholder."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            fallback_login_url="https://{tenant_name}.example.com/login",
+        )
+
+        with pytest.raises(TypeError, match="The \\[fallback_login_url\\] cannot contain the"):
+            ConfigResolver(config)
+
+    def test_partial_does_not_require_fallback_before_sdk_config_loads(self):
+        """Test fallback_login_url is not required up front, since the SDK config may still provide it."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            application_authorization_requests_enabled=True,
+            login_url="https://{tenant_name}.example.com/login",
+            parse_tenant_from_root_domain="example.com",
+        )
+
+        ConfigResolver(config)
+
+    # Auto-configure enabled (resolved values after the SDK config loads)
+
+    @pytest.mark.asyncio
+    async def test_resolved_requires_fallback_when_all_values_from_sdk(self):
+        """Test the resolved fallback_login_url is required when the SDK config enables the flag."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        sdk_config = self._sdk_config(application_authorization_requests_enabled=True)
+
+        with pytest.raises(WristbandError) as exc_info:
+            await self._preload(config, sdk_config)
+
+        assert "The resolved [fallback_login_url] must have a value" in exc_info.value.error_description
+
+    @pytest.mark.asyncio
+    async def test_resolved_requires_fallback_when_flag_is_manual_and_login_url_from_sdk(self):
+        """Test the requirement applies when the flag and login_url come from different sources."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            application_authorization_requests_enabled=True,
+        )
+        sdk_config = self._sdk_config(application_authorization_requests_enabled=False)
+
+        with pytest.raises(WristbandError) as exc_info:
+            await self._preload(config, sdk_config)
+
+        assert "The resolved [fallback_login_url] must have a value" in exc_info.value.error_description
+
+    @pytest.mark.asyncio
+    async def test_resolved_manual_false_overrides_sdk_true(self):
+        """Test a manual False flag skips the requirement even when the SDK config enables it."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            application_authorization_requests_enabled=False,
+        )
+        sdk_config = self._sdk_config(application_authorization_requests_enabled=True)
+
+        await self._preload(config, sdk_config)
+
+    @pytest.mark.asyncio
+    async def test_resolved_manual_fallback_satisfies_requirement(self):
+        """Test a manual fallback_login_url satisfies the requirement when the SDK config has none."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            fallback_login_url="https://manual.example.com/login",
+        )
+        sdk_config = self._sdk_config(application_authorization_requests_enabled=True)
+
+        await self._preload(config, sdk_config)
+
+    @pytest.mark.asyncio
+    async def test_resolved_sdk_fallback_satisfies_requirement(self):
+        """Test the SDK fallbackLoginUrl satisfies the requirement."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        sdk_config = self._sdk_config(
+            application_authorization_requests_enabled=True, fallback_login_url="https://sdk.example.com/login"
+        )
+
+        await self._preload(config, sdk_config)
+
+    @pytest.mark.asyncio
+    async def test_resolved_rejects_sdk_fallback_with_placeholder(self):
+        """Test the resolved fallback_login_url cannot contain the tenant placeholder."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        sdk_config = self._sdk_config(fallback_login_url="https://{tenant_name}.sdk.example.com/login")
+
+        with pytest.raises(WristbandError) as exc_info:
+            await self._preload(config, sdk_config)
+
+        assert "The resolved [fallback_login_url] cannot contain the" in exc_info.value.error_description
