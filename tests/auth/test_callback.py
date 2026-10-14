@@ -30,6 +30,7 @@ class TestWristbandAuthCallback:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
             token_expiration_buffer=60,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
@@ -88,7 +89,7 @@ class TestWristbandAuthCallback:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -402,7 +403,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(self.wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(self.wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
@@ -424,7 +425,8 @@ class TestWristbandAuthCallback:
         assert callback_data.user_info == mock_user_info
         assert callback_data.custom_state == {"user": "123"}
         assert callback_data.refresh_token == "refresh_token_123"
-        assert callback_data.return_url == "https://app.example.com/dashboard"
+        # Off-site return URL is rejected by open redirect validation.
+        assert callback_data.return_url is None
         assert callback_data.tenant_custom_domain is None
 
     @pytest.mark.asyncio
@@ -484,7 +486,7 @@ class TestWristbandAuthCallback:
                 new_callable=AsyncMock,
                 return_value=True,
             ) as mock_validate_domain,
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
@@ -508,6 +510,7 @@ class TestWristbandAuthCallback:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_no_buffer)
 
@@ -552,7 +555,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
@@ -679,7 +682,7 @@ class TestWristbandAuthCallback:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
             token_expiration_buffer=60,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
@@ -726,7 +729,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://{tenant_name}.auth.example.com/login"
@@ -789,7 +792,7 @@ class TestWristbandAuthCallback:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -826,6 +829,7 @@ class TestWristbandAuthCallback:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
             token_expiration_buffer=0,  # Zero buffer
         )
         wristband_auth = WristbandAuth(config_zero_buffer)
@@ -871,7 +875,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
@@ -888,7 +892,7 @@ class TestWristbandAuthCallback:
 
 
 class TestWristbandAuthCallbackBackwardCompatibility:
-    """Test cases for backward compatibility with {tenant_domain} placeholder in callback."""
+    """Test cases for backward compatibility with {tenant_name} placeholder in callback."""
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
@@ -896,17 +900,17 @@ class TestWristbandAuthCallbackBackwardCompatibility:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
             token_expiration_buffer=60,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
     @pytest.mark.asyncio
     async def test_callback_tenant_domain_placeholder_works(self) -> None:
-        """Test that callback works with {tenant_domain} placeholder for backward compatibility."""
+        """Test that callback works with {tenant_name} placeholder for backward compatibility."""
         login_state = LoginState(
             state="test_state",
             code_verifier="test_verifier",
@@ -951,9 +955,9 @@ class TestWristbandAuthCallbackBackwardCompatibility:
             ) as mock_parse_tenant,
             patch.object(self.wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(self.wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
-            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_login_url.return_value = "https://{tenant_name}.auth.example.com/login"
             mock_parse_tenant.return_value = "auth.example.com"
 
             result = await self.wristband_auth.callback(request)
@@ -965,7 +969,7 @@ class TestWristbandAuthCallbackBackwardCompatibility:
 
     @pytest.mark.asyncio
     async def test_callback_tenant_domain_redirect_url_substitution(self) -> None:
-        """Test that {tenant_domain} placeholder gets substituted in redirect URLs."""
+        """Test that {tenant_name} placeholder gets substituted in redirect URLs."""
         request = create_mock_request(
             "/callback",
             query_params={"error": "login_required", "state": "test_state"},
@@ -980,7 +984,7 @@ class TestWristbandAuthCallbackBackwardCompatibility:
                 self.wristband_auth._config_resolver, "get_parse_tenant_from_root_domain", new_callable=AsyncMock
             ) as mock_parse_tenant,
         ):
-            mock_login_url.return_value = "https://{tenant_domain}.auth.example.com/login"
+            mock_login_url.return_value = "https://{tenant_name}.auth.example.com/login"
             mock_parse_tenant.return_value = "auth.example.com"
 
             result = await self.wristband_auth.callback(request)

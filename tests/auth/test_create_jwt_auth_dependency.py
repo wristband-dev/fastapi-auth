@@ -17,6 +17,7 @@ class TestCreateJwtAuthDependency:
             client_id="test_client_id",
             client_secret="test_client_secret_minimum_32_characters_long",
             wristband_application_vanity_domain="test.wristband.dev",
+            application_authorization_requests_enabled=False,
         )
 
     @pytest.fixture

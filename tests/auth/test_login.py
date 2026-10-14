@@ -26,6 +26,7 @@ class TestWristbandAuthLogin:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
             scopes=["openid", "offline_access", "email"],
             token_expiration_buffer=60,
         )
@@ -411,10 +412,10 @@ class TestWristbandAuthLogin:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="custom.com",
+            application_authorization_requests_enabled=False,
             scopes=["openid", "email"],
         )
         temp_wristband_auth = WristbandAuth(temp_config)
@@ -445,7 +446,7 @@ class TestWristbandAuthLogin:
             mock_custom_url.return_value = None
             mock_custom_domain.return_value = False
             mock_parse_tenant.return_value = "custom.com"
-            mock_redirect_uri.return_value = "https://{tenant_domain}.app.example.com/callback"
+            mock_redirect_uri.return_value = "https://{tenant_name}.app.example.com/callback"
 
             response = await temp_wristband_auth.login(request, login_config)
 
@@ -454,7 +455,7 @@ class TestWristbandAuthLogin:
 
             # Validate query params
             assert_authorize_query_params(
-                query_params, "test_client_id", "https://{tenant_domain}.app.example.com/callback", "openid email"
+                query_params, "test_client_id", "https://{tenant_name}.app.example.com/callback", "openid email"
             )
 
             # Validate login state cookie is set
@@ -593,6 +594,7 @@ class TestWristbandAuthCreateLoginState:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -681,6 +683,7 @@ class TestWristbandAuthGenerateRandomString:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -718,6 +721,7 @@ class TestWristbandAuthEncryptDecryptLoginState:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -769,6 +773,7 @@ class TestWristbandAuthGenerateCodeChallenge:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -803,6 +808,7 @@ class TestWristbandAuthGetOAuthAuthorizeUrl:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
             scopes=["openid", "email", "profile"],
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
@@ -944,6 +950,7 @@ class TestWristbandAuthCookieManagement:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -1063,6 +1070,7 @@ class TestWristbandAuthBuildTenantLoginUrl:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -1072,10 +1080,10 @@ class TestWristbandAuthBuildTenantLoginUrl:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1124,6 +1132,7 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -1133,10 +1142,10 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1193,10 +1202,10 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1211,10 +1220,10 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1229,10 +1238,10 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1247,10 +1256,10 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1265,10 +1274,10 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1283,10 +1292,10 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1308,6 +1317,7 @@ class TestWristbandAuthAssertSingleParam:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -1359,6 +1369,7 @@ class TestWristbandAuthResolveReturnUrl:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 

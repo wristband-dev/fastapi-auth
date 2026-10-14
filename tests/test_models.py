@@ -84,7 +84,7 @@ def test_auth_config_defaults():
     assert config.is_application_custom_domain_active is None
     assert config.login_state_secret is None
     assert config.login_url is None
-    assert config.parse_tenant_from_root_domain is None
+    assert config.application_authorization_requests_enabled is None
     assert config.redirect_uri is None
     assert config.scopes == ["openid", "offline_access", "email"]
     assert config.token_expiration_buffer == 60
@@ -115,7 +115,7 @@ def test_auth_config_custom_values():
         custom_application_login_page_url="https://custom.com/login",
         dangerously_disable_secure_cookies=True,
         is_application_custom_domain_active=True,
-        parse_tenant_from_root_domain="example.com",
+        application_authorization_requests_enabled=False,
         scopes=["openid", "profile"],
         token_expiration_buffer=120,
     )
@@ -124,7 +124,7 @@ def test_auth_config_custom_values():
     assert config.custom_application_login_page_url == "https://custom.com/login"
     assert config.dangerously_disable_secure_cookies is True
     assert config.is_application_custom_domain_active is True
-    assert config.parse_tenant_from_root_domain == "example.com"
+    assert config.application_authorization_requests_enabled is False
     assert config.scopes == ["openid", "profile"]
     assert config.token_expiration_buffer == 120
 

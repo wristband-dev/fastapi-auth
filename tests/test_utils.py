@@ -1,8 +1,18 @@
+import time
+from unittest.mock import patch
+
 import pytest
 from cryptography.fernet import InvalidToken
 
 from wristband.fastapi_auth.models import RawUserInfo, UserInfo, UserInfoRole
-from wristband.fastapi_auth.utils import DataEncryptor, map_userinfo_claims
+from wristband.fastapi_auth.utils import (
+    DataEncryptor,
+    derive_fallback_login_url,
+    derive_tenant_root_domain,
+    is_tenant_placeholder_position_valid,
+    map_userinfo_claims,
+    validate_return_url,
+)
 
 SECRET = "a" * 32  # valid 32-char secret
 LONG_SECRET = "a" * 64  # longer than 32 chars
@@ -615,3 +625,144 @@ def test_encrypt_deeply_nested_data():
     assert decrypted == data
     assert decrypted["level1"]["level2"]["level3"]["level4"]["level5"]["deep_value"] == "found me!"
     assert decrypted["another_branch"]["nested"][1]["subitems"][0]["x"] == "y"
+
+
+def test_decrypt_with_ttl_accepts_recent_data():
+    encryptor = DataEncryptor(SECRET)
+    encrypted = encryptor.encrypt({"key": "value"})
+    assert encryptor.decrypt(encrypted, ttl=3600) == {"key": "value"}
+
+
+def test_decrypt_with_ttl_rejects_expired_data():
+    encryptor = DataEncryptor(SECRET)
+    encrypted = encryptor.encrypt({"key": "value"})
+    with patch("cryptography.fernet.time.time", return_value=time.time() + 3600 + 61):
+        with pytest.raises(InvalidToken):
+            encryptor.decrypt(encrypted, ttl=3600)
+
+
+####################################
+# TENANT PLACEHOLDER TESTS
+####################################
+
+
+@pytest.mark.parametrize(
+    "login_url,expected",
+    [
+        ("https://{tenant_name}.myapp.com/api/auth/login", "https://myapp.com/api/auth/login"),
+        ("http://{tenant_name}.localhost:6001/api/auth/login", "http://localhost:6001/api/auth/login"),
+        ("https://myapp.com/api/auth/login", ""),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_derive_fallback_login_url(login_url, expected):
+    assert derive_fallback_login_url(login_url) == expected
+
+
+@pytest.mark.parametrize(
+    "login_url,expected",
+    [
+        ("https://{tenant_name}.myapp.com/api/auth/login", "myapp.com"),
+        ("http://{tenant_name}.localhost:6001/api/auth/login", "localhost"),
+        ("https://myapp.com/api/auth/login", ""),
+        (None, ""),
+    ],
+)
+def test_derive_tenant_root_domain(login_url, expected):
+    assert derive_tenant_root_domain(login_url) == expected
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://myapp.com/api/auth/login", True),
+        ("https://{tenant_name}.myapp.com/api/auth/login", True),
+        ("http://{tenant_name}.localhost:6001/api/auth/login", True),
+        ("https://app.{tenant_name}.myapp.com/api/auth/login", False),
+        ("https://myapp.com/{tenant_name}/api/auth/login", False),
+        ("https://{tenant_name}/api/auth/login", False),
+        ("https://{tenant_name}.myapp.com/{tenant_name}/login", False),
+    ],
+)
+def test_is_tenant_placeholder_position_valid(url, expected):
+    assert is_tenant_placeholder_position_valid(url) is expected
+
+
+####################################
+# RETURN URL VALIDATION TESTS
+####################################
+
+ROOT_DOMAIN = "myapp.com"
+TENANT = "acme"
+TENANT_HOST = "acme.myapp.com"
+
+
+def _validate(return_url, host=TENANT_HOST, scheme="https", app_level=True, root_domain=ROOT_DOMAIN):
+    return validate_return_url(return_url, scheme, host, TENANT, app_level, root_domain)
+
+
+def test_validate_return_url_requires_tenant_name():
+    with pytest.raises(ValueError, match="Tenant name is required"):
+        validate_return_url("/settings", "https", TENANT_HOST, "", True, ROOT_DOMAIN)
+
+
+@pytest.mark.parametrize("return_url", [None, ""])
+def test_validate_return_url_missing(return_url):
+    assert _validate(return_url) is None
+
+
+@pytest.mark.parametrize(
+    "return_url",
+    ["/settings?tab=1#top", "https://acme.myapp.com/dashboard", "https://ACME.myapp.com/dashboard"],
+)
+def test_validate_return_url_allows_request_host(return_url):
+    assert _validate(return_url) == return_url
+
+
+def test_validate_return_url_allows_root_domain_without_rewrite_when_app_level_disabled():
+    assert _validate("https://myapp.com/dashboard", app_level=False) == "https://myapp.com/dashboard"
+
+
+def test_validate_return_url_rewrites_root_domain_to_tenant_subdomain_when_app_level_enabled():
+    assert _validate("https://myapp.com/dashboard?x=1#y") == "https://acme.myapp.com/dashboard?x=1#y"
+
+
+def test_validate_return_url_rewrite_preserves_port():
+    assert _validate("https://myapp.com:8443/home", host="acme.myapp.com:8443") == "https://acme.myapp.com:8443/home"
+
+
+def test_validate_return_url_allows_request_host_without_tenant_subdomains():
+    assert _validate("https://myapp.com/dashboard", host="myapp.com", root_domain="") == "https://myapp.com/dashboard"
+
+
+def test_validate_return_url_allows_relative_path_on_http_request():
+    assert _validate("/home", host="acme.localhost:6001", scheme="http", root_domain="localhost") == "/home"
+
+
+@pytest.mark.parametrize(
+    "return_url",
+    [
+        "https://evil.com/phish",
+        "//evil.com/phish",
+        "/\\evil.com",
+        "/\t/evil.com",
+        "\n//evil.com",
+        "https://other.myapp.com/dashboard",
+        "https://myapp.com.evil.com/dashboard",
+        "http://acme.myapp.com/dashboard",
+        "javascript:alert(1)",
+        "data:text/html,hi",
+        "https://acme.myapp.com:99999/dashboard",
+    ],
+)
+def test_validate_return_url_rejects_untrusted_urls(return_url):
+    assert _validate(return_url) is None
+
+
+def test_validate_return_url_rejects_root_domain_when_tenant_subdomains_not_used():
+    assert _validate("https://myapp.com/dashboard", host="acme.example.com", root_domain="") is None
+
+
+def test_validate_return_url_returns_normalized_url_when_normalization_changes_it():
+    assert _validate(" /settings ") == "https://acme.myapp.com/settings"

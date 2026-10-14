@@ -17,6 +17,7 @@ async def mock_auth_config():
         login_url="https://example.com/login",
         redirect_uri="https://example.com/callback",
         wristband_application_vanity_domain="example.wristband.dev",
+        application_authorization_requests_enabled=False,
         auto_configure_enabled=True,
     )
 

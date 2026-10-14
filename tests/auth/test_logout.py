@@ -19,6 +19,7 @@ class TestWristbandAuthLogout:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -179,10 +180,10 @@ class TestWristbandAuthLogout:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
             is_application_custom_domain_active=True,  # Uses "." separator
         )
         wristband_auth = WristbandAuth(config_with_subdomain)

@@ -41,6 +41,7 @@ def create_mock_request(
     # Mock URL object properly
     mock_url = Mock()
     mock_url.netloc = netloc
+    mock_url.scheme = parsed_url.scheme or "https"
     mock_url.__str__ = Mock(return_value=url)
     mock_request.url = mock_url
 

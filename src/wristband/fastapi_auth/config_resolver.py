@@ -1,14 +1,18 @@
 import asyncio
-import re
 from typing import Optional
 
 from .client import WristbandApiClient
 from .exceptions import WristbandError
 from .models import AuthConfig, SdkConfiguration
+from .utils import (
+    TENANT_PLACEHOLDER_MSG,
+    TENANT_PLACEHOLDER_PATTERN,
+    derive_fallback_login_url,
+    derive_tenant_root_domain,
+    is_tenant_placeholder_position_valid,
+)
 
 _default_scopes = ["openid", "offline_access", "email"]
-_tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
-_tenant_placeholder_msg = '"{tenant_name}" or "{tenant_domain}" placeholder'
 
 
 class ConfigResolver:
@@ -92,82 +96,73 @@ class ConfigResolver:
             raise TypeError("The [wristband_application_vanity_domain] config must have a value.")
         if self.auth_config.token_expiration_buffer < 0:
             raise TypeError("The [token_expiration_buffer] config must be greater than or equal to 0.")
-        if self.auth_config.parse_tenant_from_root_domain and ":" in self.auth_config.parse_tenant_from_root_domain:
-            raise TypeError("The [parse_tenant_from_root_domain] config should not include a port.")
+
+    def _validate_tenant_placeholder_position(self, config_name: str, url: str) -> None:
+        """Validate that a URL only contains the {tenant_name} placeholder once, as the leftmost part of its host."""
+        if not is_tenant_placeholder_position_valid(url):
+            raise TypeError(
+                f"The [{config_name}] can only contain the {TENANT_PLACEHOLDER_MSG} once, "
+                "as the leftmost part of its hostname."
+            )
+
+    def _validate_matching_tenant_placeholders(self, login_url: str, redirect_uri: str) -> None:
+        """Validate that either both URLs contain the {tenant_name} placeholder or neither does."""
+        login_url_has_placeholder = bool(TENANT_PLACEHOLDER_PATTERN.search(login_url))
+        redirect_uri_has_placeholder = bool(TENANT_PLACEHOLDER_PATTERN.search(redirect_uri))
+        if login_url_has_placeholder and not redirect_uri_has_placeholder:
+            raise TypeError(
+                f"The [redirect_uri] must contain the {TENANT_PLACEHOLDER_MSG} when the [login_url] contains it."
+            )
+        if not login_url_has_placeholder and redirect_uri_has_placeholder:
+            raise TypeError(
+                f"The [redirect_uri] cannot contain the {TENANT_PLACEHOLDER_MSG} when the [login_url] "
+                "does not contain it."
+            )
 
     def _validate_strict_url_auth_configs(self) -> None:
-        """Validate URL configuration when auto-configure is disabled."""
+        """
+        Validate URL configuration when auto-configure is disabled.
+
+        With auto-configure disabled, the SDK has no other source for [login_url] and [redirect_uri], so both are
+        required. Each URL can only contain the {tenant_name} placeholder once, as the leftmost part of its hostname,
+        and either both URLs contain the placeholder or neither does.
+        """
         if not self.auth_config.login_url or not self.auth_config.login_url.strip():
             raise TypeError("The [login_url] config must have a value when auto-configure is disabled.")
         if not self.auth_config.redirect_uri or not self.auth_config.redirect_uri.strip():
             raise TypeError("The [redirect_uri] config must have a value when auto-configure is disabled.")
 
-        if self.auth_config.parse_tenant_from_root_domain:
-            if not _tenant_placeholder_pattern.search(self.auth_config.login_url):
-                raise TypeError(
-                    f"The [login_url] must contain the {_tenant_placeholder_msg} when using the "
-                    "[parse_tenant_from_root_domain] config."
-                )
-            if not _tenant_placeholder_pattern.search(self.auth_config.redirect_uri):
-                raise TypeError(
-                    f"The [redirect_uri] must contain the {_tenant_placeholder_msg} when using the "
-                    "[parse_tenant_from_root_domain] config."
-                )
-        else:
-            if _tenant_placeholder_pattern.search(self.auth_config.login_url):
-                raise TypeError(
-                    f"The [login_url] cannot contain the {_tenant_placeholder_msg} when the "
-                    "[parse_tenant_from_root_domain] is absent."
-                )
-            if _tenant_placeholder_pattern.search(self.auth_config.redirect_uri):
-                raise TypeError(
-                    f"The [redirect_uri] cannot contain the {_tenant_placeholder_msg} when the "
-                    "[parse_tenant_from_root_domain] is absent."
-                )
+        self._validate_tenant_placeholder_position("login_url", self.auth_config.login_url)
+        self._validate_tenant_placeholder_position("redirect_uri", self.auth_config.redirect_uri)
+        self._validate_matching_tenant_placeholders(self.auth_config.login_url, self.auth_config.redirect_uri)
 
     def _validate_partial_url_auth_configs(self) -> None:
-        """Validate manually provided URL configuration when auto-configure is enabled."""
-        if self.auth_config.login_url:
-            if self.auth_config.parse_tenant_from_root_domain and not _tenant_placeholder_pattern.search(
-                self.auth_config.login_url
-            ):
-                raise TypeError(
-                    f"The [login_url] must contain the {_tenant_placeholder_msg} when using the "
-                    "[parse_tenant_from_root_domain] config."
-                )
-            if not self.auth_config.parse_tenant_from_root_domain and _tenant_placeholder_pattern.search(
-                self.auth_config.login_url
-            ):
-                raise TypeError(
-                    f"The [login_url] cannot contain the {_tenant_placeholder_msg} when the "
-                    "[parse_tenant_from_root_domain] is absent."
-                )
+        """
+        Validate manually provided URL configuration when auto-configure is enabled.
 
+        Only the values that are provided are checked. When only one of the two URLs is provided, the placeholder
+        comparison happens in _validate_all_dynamic_configs() instead, once the other URL is available from the
+        SDK Auto-Configuration Endpoint.
+        """
+        if self.auth_config.login_url:
+            self._validate_tenant_placeholder_position("login_url", self.auth_config.login_url)
         if self.auth_config.redirect_uri:
-            if self.auth_config.parse_tenant_from_root_domain and not _tenant_placeholder_pattern.search(
-                self.auth_config.redirect_uri
-            ):
-                raise TypeError(
-                    f"The [redirect_uri] must contain the {_tenant_placeholder_msg} when using the "
-                    "[parse_tenant_from_root_domain] config."
-                )
-            if not self.auth_config.parse_tenant_from_root_domain and _tenant_placeholder_pattern.search(
-                self.auth_config.redirect_uri
-            ):
-                raise TypeError(
-                    f"The [redirect_uri] cannot contain the {_tenant_placeholder_msg} when the "
-                    "[parse_tenant_from_root_domain] is absent."
-                )
+            self._validate_tenant_placeholder_position("redirect_uri", self.auth_config.redirect_uri)
+        if self.auth_config.login_url and self.auth_config.redirect_uri:
+            self._validate_matching_tenant_placeholders(self.auth_config.login_url, self.auth_config.redirect_uri)
 
     def _validate_all_dynamic_configs(self, sdk_configuration: SdkConfiguration) -> None:
-        """Validate all dynamic configurations after SDK config is loaded."""
+        """
+        Validate the final resolved URL configs after the SDK Auto-Configuration Endpoint responds.
+
+        When at least one of [login_url] and [redirect_uri] was provided manually, either both resolved URLs must
+        contain the {tenant_name} placeholder or neither does. When both URLs come from the SDK Auto-Configuration
+        Endpoint, their placeholders are trusted as-is.
+        """
 
         # Use manual config values if provided, otherwise use SDK config values
         login_url = self.auth_config.login_url or sdk_configuration.login_url
         redirect_uri = self.auth_config.redirect_uri or sdk_configuration.redirect_uri
-        parse_tenant_from_root_domain = (
-            self.auth_config.parse_tenant_from_root_domain or sdk_configuration.login_url_tenant_domain_suffix or ""
-        )
 
         # Validate that required fields are present in the SDK config response
         if not login_url:
@@ -179,32 +174,22 @@ class ConfigResolver:
                 "or ensure your Wristband OAuth2 Client has a single redirect URI configured.",
             )
 
-        # Validate the tenant domain token logic with final resolved values
-        if parse_tenant_from_root_domain:
-            if not _tenant_placeholder_pattern.search(login_url):
+        # Only one of login_url and redirect_uri may have come from the manual config, so compare the final
+        # resolved values. Values that both come from the SDK Auto-Configuration Endpoint are trusted as-is.
+        if self.auth_config.login_url or self.auth_config.redirect_uri:
+            login_url_has_placeholder = bool(TENANT_PLACEHOLDER_PATTERN.search(login_url))
+            redirect_uri_has_placeholder = bool(TENANT_PLACEHOLDER_PATTERN.search(redirect_uri))
+            if login_url_has_placeholder and not redirect_uri_has_placeholder:
                 raise WristbandError(
                     "config_validation_error",
-                    f"The resolved [login_url] must contain the {_tenant_placeholder_msg} when using "
-                    "[parse_tenant_from_root_domain].",
+                    f"The resolved [redirect_uri] must contain the {TENANT_PLACEHOLDER_MSG} when the resolved "
+                    "[login_url] contains it.",
                 )
-            if not _tenant_placeholder_pattern.search(redirect_uri):
+            if not login_url_has_placeholder and redirect_uri_has_placeholder:
                 raise WristbandError(
                     "config_validation_error",
-                    f"The resolved [redirect_uri] must contain the {_tenant_placeholder_msg} when using "
-                    "[parse_tenant_from_root_domain].",
-                )
-        else:
-            if _tenant_placeholder_pattern.search(login_url):
-                raise WristbandError(
-                    "config_validation_error",
-                    f"The resolved [login_url] cannot contain the {_tenant_placeholder_msg} when "
-                    "[parse_tenant_from_root_domain] is absent.",
-                )
-            if _tenant_placeholder_pattern.search(redirect_uri):
-                raise WristbandError(
-                    "config_validation_error",
-                    f"The resolved [redirect_uri] cannot contain the {_tenant_placeholder_msg} when "
-                    "[parse_tenant_from_root_domain] is absent.",
+                    f"The resolved [redirect_uri] cannot contain the {TENANT_PLACEHOLDER_MSG} when the resolved "
+                    "[login_url] does not contain it.",
                 )
 
     # ////////////////////////////////////
@@ -291,9 +276,9 @@ class ConfigResolver:
 
     async def get_parse_tenant_from_root_domain(self) -> str:
         """Get the root domain for parsing tenant subdomains."""
-        # 1. Check if manually provided in authConfig
-        if self.auth_config.parse_tenant_from_root_domain:
-            return self.auth_config.parse_tenant_from_root_domain
+        # 1. Derive from the manually provided login_url
+        if self.auth_config.login_url:
+            return derive_tenant_root_domain(self.auth_config.login_url)
 
         # 2. If auto-configure is enabled, get from SDK config
         if self.get_auto_configure_enabled():
@@ -316,3 +301,31 @@ class ConfigResolver:
 
         # 3. This should not happen if validation is done properly
         raise TypeError("The [redirect_uri] config must have a value")
+
+    async def get_application_authorization_requests_enabled(self) -> bool:
+        """Get whether application-level authorization requests are enabled."""
+        # 1. Check if manually provided in authConfig
+        if self.auth_config.application_authorization_requests_enabled is not None:
+            return self.auth_config.application_authorization_requests_enabled
+
+        # 2. If auto-configure is enabled, get from SDK config
+        if self.get_auto_configure_enabled():
+            sdk_config = await self._load_sdk_config()
+            return sdk_config.application_authorization_requests_enabled
+
+        # 3. Default fallback
+        return True
+
+    async def get_fallback_login_url(self) -> str:
+        """Get the login URL without the {tenant_name} subdomain, used when a tenant cannot be resolved."""
+        # 1. Derive from the manually provided login_url
+        if self.auth_config.login_url:
+            return derive_fallback_login_url(self.auth_config.login_url)
+
+        # 2. If auto-configure is enabled, get from SDK config
+        if self.get_auto_configure_enabled():
+            sdk_config = await self._load_sdk_config()
+            return sdk_config.fallback_login_url or ""
+
+        # 3. Default fallback
+        return ""

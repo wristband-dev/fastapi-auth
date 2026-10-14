@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import logging
-import re
 import secrets
 import time
 from datetime import datetime
@@ -45,7 +44,7 @@ from .models import (
     UserInfo,
     WristbandTokenResponse,
 )
-from .utils import DataEncryptor
+from .utils import TENANT_PLACEHOLDER_PATTERN, DataEncryptor, validate_return_url
 
 _logger: logging.Logger = logging.getLogger(__name__)
 
@@ -62,9 +61,10 @@ class WristbandAuth:
     """
 
     _cookie_prefix: str = "login#"
+    _login_state_cookie_max_age: int = 3600
+    _login_state_clock_skew: int = 60
     _login_state_cookie_separator: str = "#"
     _return_url_char_max_len = 450
-    _tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
 
     def __init__(self, auth_config: AuthConfig) -> None:
         self._config_resolver = ConfigResolver(auth_config)
@@ -124,6 +124,9 @@ class WristbandAuth:
         """
 
         # Fetch our SDK configs
+        application_authorization_requests_enabled = (
+            await self._config_resolver.get_application_authorization_requests_enabled()
+        )
         client_id = self._config_resolver.get_client_id()
         custom_application_login_page_url = await self._config_resolver.get_custom_application_login_page_url()
         dangerously_disable_secure_cookies = self._config_resolver.get_dangerously_disable_secure_cookies()
@@ -143,7 +146,12 @@ class WristbandAuth:
 
         resovled_return_url: Optional[str] = self._resolve_return_url(request, config.return_url)
 
-        # In the event we cannot determine either a tenant custom domain or subdomain, send the user to app-level login.
+        # Determine whether to use the root domain for the login state cookie.
+        cookie_domain: Optional[str] = self._get_login_state_cookie_domain(
+            application_authorization_requests_enabled, parse_tenant_from_root_domain
+        )
+
+        # In the event we cannot determine either a tenant custom domain or subdomain, deduce the right app-level URL.
         if not any(
             [
                 tenant_custom_domain,
@@ -152,6 +160,21 @@ class WristbandAuth:
                 default_tenant_name,
             ]
         ):
+            if application_authorization_requests_enabled:
+                # Send users to the app-level Authorize Endpoint with a login state cookie instead of going to the
+                # Application-Level Login Page. Wristband handles tenant discovery within that same flow.
+                app_login_state: LoginState = self._create_login_state(
+                    redirect_uri, config.custom_state, resovled_return_url
+                )
+                app_authorize_url: str = (
+                    f"https://{wristband_application_vanity_domain}/api/v1/oauth2/authorize?"
+                    f"{self._get_authorize_query_string(request, client_id, redirect_uri, scopes, app_login_state)}"
+                )
+                return self._create_authorize_response(
+                    request, app_authorize_url, app_login_state, dangerously_disable_secure_cookies, cookie_domain
+                )
+
+            # For the login page scenario, we don't actually want to touch any login state cookies.
             app_login_url: str = (
                 custom_application_login_page_url or f"https://{wristband_application_vanity_domain}/login"
             )
@@ -166,7 +189,7 @@ class WristbandAuth:
         # Create the login state which will be cached in a cookie so that it can be accessed in the callback.
         login_state: LoginState = self._create_login_state(redirect_uri, config.custom_state, resovled_return_url)
 
-        # Create the Wristband Authorize Endpoint URL which the user will get redirectd to.
+        # Create the Wristband Authorize Endpoint URL which the user will get redirected to.
         authorize_url: str = self._get_oauth_authorize_url(
             request=request,
             config=OAuthAuthorizeUrlConfig(
@@ -184,25 +207,10 @@ class WristbandAuth:
             ),
         )
 
-        # Create the redirect response
-        authorize_response: Response = RedirectResponse(url=authorize_url, status_code=302)
-        authorize_response.headers["Cache-Control"] = "no-store"
-        authorize_response.headers["Pragma"] = "no-cache"
-
-        # Clear any stale login state cookies and add a new one for the current request.
-        self._clear_oldest_login_state_cookie(request, authorize_response, dangerously_disable_secure_cookies)
-        encrypted_login_state: str = self._encrypt_login_state(login_state)
-
-        # Create the login state cookie
-        self._create_login_state_cookie(
-            res=authorize_response,
-            state=login_state.state,
-            encrypted_login_state=encrypted_login_state,
-            disable_secure=dangerously_disable_secure_cookies,
+        # Perform the redirect to Wristband's Authorize Endpoint with a new login state cookie.
+        return self._create_authorize_response(
+            request, authorize_url, login_state, dangerously_disable_secure_cookies, cookie_domain
         )
-
-        # Perform the redirect to Wristband's Authorize Endpoint.
-        return authorize_response
 
     #################################
     #  CALLBACK
@@ -232,6 +240,9 @@ class WristbandAuth:
         """
 
         # Fetch our SDK configs
+        application_authorization_requests_enabled = (
+            await self._config_resolver.get_application_authorization_requests_enabled()
+        )
         login_url = await self._config_resolver.get_login_url()
         parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
         token_expiration_buffer = self._config_resolver.get_token_expiration_buffer()
@@ -267,7 +278,7 @@ class WristbandAuth:
 
         # Build the tenant login URL in case we need to redirect
         if parse_tenant_from_root_domain:
-            tenant_login_url: str = self._tenant_placeholder_pattern.sub(resolved_tenant_name, login_url)
+            tenant_login_url: str = TENANT_PLACEHOLDER_PATTERN.sub(resolved_tenant_name, login_url)
         else:
             tenant_login_url = f"{login_url}?tenant_name={resolved_tenant_name}"
 
@@ -288,7 +299,14 @@ class WristbandAuth:
                 reason=CallbackFailureReason.MISSING_LOGIN_STATE,
             )
 
-        login_state: LoginState = self._decrypt_login_state(login_state_cookie_val)
+        # A cookie that cannot be decrypted (tampered, expired, or encrypted with a different secret) can't be trusted.
+        login_state: Optional[LoginState] = self._decrypt_login_state(login_state_cookie_val)
+        if login_state is None:
+            return RedirectRequiredCallbackResult(
+                type=CallbackResultType.REDIRECT_REQUIRED,
+                redirect_url=tenant_login_url,
+                reason=CallbackFailureReason.INVALID_LOGIN_STATE,
+            )
 
         # Validate the state from the cookie matches the incoming state param
         if param_state != login_state.state:
@@ -327,6 +345,16 @@ class WristbandAuth:
             expires_in = token_response.expires_in - token_expiration_buffer
             expires_at = int((time.time() + expires_in) * 1000)
 
+            # Prevent open redirects by validating the return URL against allowed hosts.
+            validated_return_url: Optional[str] = validate_return_url(
+                return_url=login_state.return_url,
+                request_scheme=request.url.scheme,
+                request_host=request.url.netloc,
+                tenant_name=resolved_tenant_name,
+                application_authorization_requests_enabled=application_authorization_requests_enabled,
+                parse_tenant_from_root_domain=parse_tenant_from_root_domain,
+            )
+
             # Return the callback data and result
             return CompletedCallbackResult(
                 type=CallbackResultType.COMPLETED,
@@ -339,7 +367,7 @@ class WristbandAuth:
                     user_info=userinfo,
                     custom_state=login_state.custom_state,
                     refresh_token=token_response.refresh_token,
-                    return_url=login_state.return_url,
+                    return_url=validated_return_url,
                     tenant_custom_domain=tenant_custom_domain_param or None,
                 ),
             )
@@ -369,7 +397,11 @@ class WristbandAuth:
         """
 
         # Fetch our SDK configs
+        application_authorization_requests_enabled = (
+            await self._config_resolver.get_application_authorization_requests_enabled()
+        )
         dangerously_disable_secure_cookies = self._config_resolver.get_dangerously_disable_secure_cookies()
+        parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
 
         if not redirect_url or not redirect_url.strip():
             raise TypeError("redirect_url cannot be null or empty")
@@ -384,6 +416,9 @@ class WristbandAuth:
                 res=redirect_response,
                 cookie_name=login_state_cookie_name,
                 dangerously_disable_secure_cookies=dangerously_disable_secure_cookies,
+                domain=self._get_login_state_cookie_domain(
+                    application_authorization_requests_enabled, parse_tenant_from_root_domain
+                ),
             )
 
         return redirect_response
@@ -407,9 +442,14 @@ class WristbandAuth:
         """
 
         # Fetch our SDK configs
+        application_authorization_requests_enabled = (
+            await self._config_resolver.get_application_authorization_requests_enabled()
+        )
         client_id = self._config_resolver.get_client_id()
         custom_application_login_page_url = await self._config_resolver.get_custom_application_login_page_url()
+        fallback_login_url = await self._config_resolver.get_fallback_login_url()
         is_application_custom_domain_active = await self._config_resolver.get_is_application_custom_domain_active()
+        login_url = await self._config_resolver.get_login_url()
         parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
         wristband_application_vanity_domain = self._config_resolver.get_wristband_application_vanity_domain()
 
@@ -466,9 +506,21 @@ class WristbandAuth:
             )
             return res
 
-        # Otherwise, fallback to app login URL (or custom logout redirect URL) if tenant cannot be determined.
+        # 5) First try falling back to the logout redirect URL (if the LogoutConfig has it) if tenant is unresolved.
+        if config.redirect_url:
+            res.headers["Location"] = config.redirect_url
+            return res
+
+        # 6) If app-level authorization requests are enabled, then redirect to the appropriate app-level Login
+        # Endpoint to start a new app-level Authorize Endpoint flow.
+        if application_authorization_requests_enabled:
+            res.headers["Location"] = fallback_login_url if TENANT_PLACEHOLDER_PATTERN.search(login_url) else login_url
+            return res
+
+        # 7a) If a custom page URL is set, fallback to that Application-Level Login when tenant cannot be resolved.
+        # 7b) Finally, fallback to the Wristband-hosted Application-Level Login Page when tenant cannot be resolved.
         app_login_url: str = custom_application_login_page_url or f"https://{wristband_application_vanity_domain}/login"
-        res.headers["Location"] = config.redirect_url or f"{app_login_url}?client_id={client_id}"
+        res.headers["Location"] = f"{app_login_url}?client_id={client_id}"
         return res
 
     #################################
@@ -822,13 +874,53 @@ class WristbandAuth:
             custom_state=custom_state,
         )
 
+    def _get_login_state_cookie_domain(
+        self, application_authorization_requests_enabled: bool, parse_tenant_from_root_domain: Optional[str]
+    ) -> Optional[str]:
+        # With app-level authorization requests and tenant subdomains, the login can start on the root domain and
+        # finish on a tenant subdomain, so the login state cookie must be readable across both.
+        if application_authorization_requests_enabled and parse_tenant_from_root_domain:
+            return f".{parse_tenant_from_root_domain}"
+        return None
+
+    def _create_authorize_response(
+        self,
+        request: Request,
+        authorize_url: str,
+        login_state: LoginState,
+        dangerously_disable_secure_cookies: bool,
+        cookie_domain: Optional[str],
+    ) -> Response:
+        authorize_response: Response = RedirectResponse(url=authorize_url, status_code=302)
+        authorize_response.headers["Cache-Control"] = "no-store"
+        authorize_response.headers["Pragma"] = "no-cache"
+
+        # Clear any stale login state cookies and add a new one for the current request.
+        self._clear_oldest_login_state_cookie(
+            request, authorize_response, dangerously_disable_secure_cookies, cookie_domain
+        )
+        encrypted_login_state: str = self._encrypt_login_state(login_state)
+        self._create_login_state_cookie(
+            res=authorize_response,
+            state=login_state.state,
+            encrypted_login_state=encrypted_login_state,
+            disable_secure=dangerously_disable_secure_cookies,
+            domain=cookie_domain,
+        )
+        return authorize_response
+
     def _clear_login_state_cookie(
-        self, res: Response, cookie_name: str, dangerously_disable_secure_cookies: bool
+        self,
+        res: Response,
+        cookie_name: str,
+        dangerously_disable_secure_cookies: bool,
+        domain: Optional[str] = None,
     ) -> None:
         res.set_cookie(
             key=cookie_name,
             value="",
             path="/",
+            domain=domain,
             httponly=True,
             samesite="lax",
             max_age=0,
@@ -841,7 +933,11 @@ class WristbandAuth:
         return random_string.rstrip("=")[:length]
 
     def _clear_oldest_login_state_cookie(
-        self, request: Request, res: Response, dangerously_disable_secure_cookies: bool
+        self,
+        request: Request,
+        res: Response,
+        dangerously_disable_secure_cookies: bool,
+        domain: Optional[str] = None,
     ) -> None:
         cookies = request.cookies
         login_cookie_names = [name for name in cookies if name.startswith(self._cookie_prefix)]
@@ -859,7 +955,11 @@ class WristbandAuth:
                 parts = cookie_name.split(self._login_state_cookie_separator)
                 if len(parts) > 2 and parts[2] not in newest_timestamps:
                     res.delete_cookie(
-                        cookie_name, httponly=True, secure=not dangerously_disable_secure_cookies, path="/"
+                        cookie_name,
+                        httponly=True,
+                        secure=not dangerously_disable_secure_cookies,
+                        path="/",
+                        domain=domain,
                     )
 
     def _encrypt_login_state(self, login_state: LoginState) -> str:
@@ -876,12 +976,14 @@ class WristbandAuth:
         state: str,
         encrypted_login_state: str,
         disable_secure: bool = False,
+        domain: Optional[str] = None,
     ) -> None:
         res.set_cookie(
             key=f"{self._cookie_prefix}{state}{self._login_state_cookie_separator}{str(int(1000 * time.time()))}",
             value=encrypted_login_state,
-            max_age=3600,
+            max_age=self._login_state_cookie_max_age,
             path="/",
+            domain=domain,
             secure=not disable_secure,
             httponly=True,
             samesite="lax",
@@ -891,7 +993,22 @@ class WristbandAuth:
         digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
         return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
-    def _get_oauth_authorize_url(self, request: Request, config: OAuthAuthorizeUrlConfig) -> str:
+    def _get_authorize_query_string(
+        self, request: Request, client_id: str, redirect_uri: str, scopes: List[str], login_state: LoginState
+    ) -> str:
+        return self._get_authorize_query_params(
+            request,
+            OAuthAuthorizeUrlConfig(
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                code_verifier=login_state.code_verifier,
+                scopes=scopes,
+                state=login_state.state,
+                wristband_application_vanity_domain=self._config_resolver.get_wristband_application_vanity_domain(),
+            ),
+        )
+
+    def _get_authorize_query_params(self, request: Request, config: OAuthAuthorizeUrlConfig) -> str:
         login_hint_list = request.query_params.getlist("login_hint")
         if len(login_hint_list) > 1:
             raise TypeError("More than one [login_hint] query parameter was encountered")
@@ -916,9 +1033,12 @@ class WristbandAuth:
         if idp_hint_list:
             query_params["idp_hint"] = idp_hint_list[0]
 
+        return urlencode(query_params)
+
+    def _get_oauth_authorize_url(self, request: Request, config: OAuthAuthorizeUrlConfig) -> str:
         # Separator changes to a period if using an app-level custom domain with tenant subdomains
         separator: Literal[".", "-"] = "." if config.is_application_custom_domain_active else "-"
-        path_and_query: str = f"/api/v1/oauth2/authorize?{urlencode(query_params)}"
+        path_and_query: str = f"/api/v1/oauth2/authorize?{self._get_authorize_query_params(request, config)}"
 
         # Domain priority order resolution:
         # 1)  tenant_custom_domain query param
@@ -967,9 +1087,17 @@ class WristbandAuth:
 
         return None, None
 
-    def _decrypt_login_state(self, login_state_cookie: str) -> LoginState:
-        login_state_dict = self._login_state_encryptor.decrypt(login_state_cookie)
-        return LoginState(**login_state_dict)
+    def _decrypt_login_state(self, login_state_cookie: str) -> Optional[LoginState]:
+        try:
+            # The max age matches the login state cookie's Max-Age (1 hour), with some clock skew tolerance.
+            login_state_dict = self._login_state_encryptor.decrypt(
+                login_state_cookie, ttl=self._login_state_cookie_max_age + self._login_state_clock_skew
+            )
+            return LoginState(**login_state_dict)
+        except Exception:
+            # Any failure (tampered, expired, malformed, or encrypted with a different secret) means the cookie
+            # can't be trusted. Return None so the callback can redirect to login instead of failing.
+            return None
 
     def _get_jwt_validator(
         self, jwks_cache_max_size: Optional[int], jwks_cache_ttl: Optional[int]

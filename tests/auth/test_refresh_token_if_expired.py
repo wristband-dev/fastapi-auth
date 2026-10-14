@@ -19,6 +19,7 @@ def auth_config():
         login_url="https://example.com/login",
         redirect_uri="https://example.com/callback",
         wristband_application_vanity_domain="app.wristband.dev",
+        application_authorization_requests_enabled=False,
         token_expiration_buffer=60,
     )
 

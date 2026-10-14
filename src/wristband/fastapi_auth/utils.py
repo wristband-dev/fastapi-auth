@@ -1,10 +1,22 @@
 import base64
 import json
-from typing import Any, Dict, List, Union, cast
+import re
+from typing import Any, Dict, List, Optional, Union, cast
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from cryptography.fernet import Fernet, MultiFernet
 
 from .models import RawUserInfo, UserInfo
+
+TENANT_NAME_PLACEHOLDER = "{tenant_name}"
+TENANT_PLACEHOLDER_PATTERN = re.compile(r"\{tenant_name\}")
+LEADING_TENANT_PLACEHOLDER_PATTERN = re.compile(r"^https?://\{tenant_name\}\.")
+TENANT_PLACEHOLDER_MSG = '"{tenant_name}" placeholder'
+
+# Browsers strip leading/trailing C0 control characters and spaces from URLs, and remove ASCII tabs and newlines
+# anywhere in them. They also treat backslashes as forward slashes for http(s) URLs.
+_URL_LEADING_TRAILING_STRIP = "".join(chr(c) for c in range(0x21))
+_URL_TAB_OR_NEWLINE_PATTERN = re.compile(r"[\t\n\r]")
 
 
 def map_userinfo_claims(raw: RawUserInfo) -> UserInfo:
@@ -118,7 +130,7 @@ class DataEncryptor:
         encrypted: bytes = self.cipher.encrypt(json_data)
         return encrypted.decode()
 
-    def decrypt(self, encrypted_str: str) -> Dict[str, Any]:
+    def decrypt(self, encrypted_str: str, ttl: Optional[int] = None) -> Dict[str, Any]:
         """
         Decrypt an encrypted string back into a dictionary.
 
@@ -126,6 +138,8 @@ class DataEncryptor:
 
         Args:
             encrypted_str (str): The encrypted string to decrypt.
+            ttl (int, optional): The max age of the encrypted string in seconds. When provided, decryption fails
+                for strings encrypted longer ago than this.
 
         Returns:
             dict: The decrypted data dictionary.
@@ -138,5 +152,127 @@ class DataEncryptor:
         if not encrypted_str:
             raise ValueError("Empty encrypted string cannot be decrypted")
 
-        decrypted_bytes: bytes = self.cipher.decrypt(encrypted_str.encode())
+        decrypted_bytes: bytes = self.cipher.decrypt(encrypted_str.encode(), ttl=ttl)
         return cast(Dict[str, Any], json.loads(decrypted_bytes.decode()))
+
+
+def derive_fallback_login_url(login_url: Optional[str]) -> str:
+    """
+    Derives the fallback login URL from a login URL that uses the {tenant_name} placeholder.
+
+    The placeholder must be the leftmost part of the hostname, e.g. https://{tenant_name}.example.com/auth/login.
+    The fallback login URL is the login URL with the placeholder removed, e.g. https://example.com/auth/login.
+
+    Args:
+        login_url: The application's login URL.
+
+    Returns:
+        The derived fallback login URL, or an empty string when the login URL has no placeholder.
+    """
+    if not login_url or not TENANT_PLACEHOLDER_PATTERN.search(login_url):
+        return ""
+    return login_url.replace(f"{TENANT_NAME_PLACEHOLDER}.", "", 1)
+
+
+def derive_tenant_root_domain(login_url: Optional[str]) -> str:
+    """
+    Derives the root domain used for parsing tenant subdomains from a login URL that uses the {tenant_name}
+    placeholder. The root domain is the hostname with the placeholder removed, without any port.
+
+    Args:
+        login_url: The application's login URL.
+
+    Returns:
+        The derived root domain (e.g. example.com), or an empty string when the login URL has no placeholder.
+    """
+    fallback_login_url = derive_fallback_login_url(login_url)
+    return (urlsplit(fallback_login_url).hostname or "") if fallback_login_url else ""
+
+
+def is_tenant_placeholder_position_valid(url: str) -> bool:
+    """
+    Checks that a URL containing the {tenant_name} placeholder has it exactly once, as the leftmost part of the
+    hostname. URLs without the placeholder are always considered valid.
+
+    Args:
+        url: The URL to check.
+
+    Returns:
+        True if the placeholder is absent or correctly positioned.
+    """
+    if not TENANT_PLACEHOLDER_PATTERN.search(url):
+        return True
+
+    # Removing the leading placeholder should leave no other {tenant_name} anywhere in the URL.
+    return bool(LEADING_TENANT_PLACEHOLDER_PATTERN.search(url)) and not TENANT_PLACEHOLDER_PATTERN.search(
+        url.replace(f"{TENANT_NAME_PLACEHOLDER}.", "", 1)
+    )
+
+
+def validate_return_url(
+    return_url: Optional[str],
+    request_scheme: str,
+    request_host: str,
+    tenant_name: str,
+    application_authorization_requests_enabled: bool,
+    parse_tenant_from_root_domain: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Validates a user-supplied return URL to prevent open redirects. Without this, an attacker could craft a login
+    link with return_url=https://evil.com so that a legitimate login ends with the user being sent to a site they
+    don't control.
+
+    Args:
+        return_url: The return URL from the login state cookie.
+        request_scheme: The scheme of the current request (e.g. "https").
+        request_host: The host of the current request, including any port (e.g. "acme.example.com:8000").
+        tenant_name: The resolved tenant name for the current callback request.
+        application_authorization_requests_enabled: Whether app-level authorization requests are enabled.
+        parse_tenant_from_root_domain: The root domain when tenant subdomains are in use, otherwise empty.
+
+    Returns:
+        The validated return URL, or None if it is missing, malformed, or points to a host that isn't allowed.
+    """
+    # Safety check: should never happen.
+    if not tenant_name:
+        raise ValueError("Tenant name is required to validate return_url")
+
+    # Return URL is optional during login
+    if not return_url:
+        return None
+
+    try:
+        # Normalize the URL the same way a browser would before redirecting to it, so that tricks like
+        # "/\\evil.com" or "/\t/evil.com" are checked against the real redirect target.
+        normalized_url = _URL_TAB_OR_NEWLINE_PATTERN.sub("", return_url.strip(_URL_LEADING_TRAILING_STRIP))
+        normalized_url = normalized_url.replace("\\", "/")
+
+        # Resolve against the current request's origin so relative paths like "/settings" land on the
+        # user's current host. Absolute URLs ignore the base.
+        url = urlsplit(urljoin(f"{request_scheme}://{request_host}", normalized_url))
+        url.port  # Raises ValueError for an invalid port
+        url_hostname = url.hostname or ""
+        request_hostname = (urlsplit(f"//{request_host}").hostname or "").lower()
+        root_domain = (parse_tenant_from_root_domain or "").lower()
+
+        # Only allow redirects to the root domain or the exact host that served this request, over the same
+        # protocol. Anything else is treated as untrusted and discarded. The protocol check blocks downgrades
+        # like https -> http.
+        if url.scheme != request_scheme.lower() or not url_hostname:
+            return None
+        if url_hostname != request_hostname and (not root_domain or url_hostname != root_domain):
+            return None
+
+        if root_domain and application_authorization_requests_enabled and url_hostname == root_domain:
+            # The return URL points at the bare root domain, but the app expects tenant subdomains. Prepend the
+            # resolved tenant so the user lands on their tenant's host (e.g. myapp.com -> acme.myapp.com).
+            # Path, query, fragment, and port are preserved.
+            port = f":{url.port}" if url.port else ""
+            return urlunsplit(url._replace(netloc=f"{tenant_name}.{url_hostname}{port}"))
+
+        # Allowed host and no tenant rewrite needed. Return the URL unchanged unless normalization changed it,
+        # in which case return the normalized absolute URL so the browser lands exactly where we validated.
+        return return_url if normalized_url == return_url else urlunsplit(url)
+    except ValueError:
+        # urlsplit() raises on malformed input (e.g. an invalid port). Treat anything unparseable as unsafe.
+        return None

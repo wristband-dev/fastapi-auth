@@ -147,79 +147,6 @@ class TestConfigResolverValidation:
         ):
             ConfigResolver(config)
 
-    def test_validate_tenant_name_token_missing_in_login_url(self):
-        """Test validation fails when tenant domain token missing from login_url."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://test.com/login",
-            redirect_uri="https://{tenant_name}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        with pytest.raises(
-            TypeError,
-            match=re.escape(
-                'The [login_url] must contain the "{tenant_name}" or "{tenant_domain}" '
-                "placeholder when using the [parse_tenant_from_root_domain] config."
-            ),
-        ):
-            ConfigResolver(config)
-
-    def test_validate_tenant_name_token_missing_in_redirect_uri(self):
-        """Test validation fails when tenant domain token missing from redirect_uri."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_name}.test.com/login",
-            redirect_uri="https://test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        with pytest.raises(
-            TypeError,
-            match=re.escape('The [redirect_uri] must contain the "{tenant_name}" or "{tenant_domain}" placeholder'),
-        ):
-            ConfigResolver(config)
-
-    def test_validate_tenant_name_token_present_without_parsing(self):
-        """Test validation fails when tenant domain token present but parsing disabled."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_name}.test.com/login",
-            redirect_uri="https://test.com/callback",
-        )
-
-        with pytest.raises(
-            TypeError,
-            match=re.escape('The [login_url] cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder'),
-        ):
-            ConfigResolver(config)
-
-    def test_validate_partial_url_configs_with_auto_configure(self):
-        """Test validation of partial URL configs when auto-configure is enabled."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=True,
-            login_url="https://test.com/login",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        with pytest.raises(
-            TypeError,
-            match=re.escape('The [login_url] must contain the "{tenant_name}" or "{tenant_domain}" placeholder'),
-        ):
-            ConfigResolver(config)
-
     def test_valid_configuration_passes(self):
         """Test that valid configuration passes validation."""
         config = AuthConfig(
@@ -229,27 +156,12 @@ class TestConfigResolverValidation:
             auto_configure_enabled=False,
             login_url="https://{tenant_name}.test.com/login",
             redirect_uri="https://{tenant_name}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
             login_state_secret="a" * 32,
         )
 
         # Should not raise
         resolver = ConfigResolver(config)
         assert resolver is not None
-
-    def test_validate_parse_tenant_from_root_domain_with_port(self):
-        """Test validation fails when parse_tenant_from_root_domain includes a port."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            parse_tenant_from_root_domain="example.com:8080",
-        )
-
-        with pytest.raises(
-            TypeError, match=re.escape("The [parse_tenant_from_root_domain] config should not include a port.")
-        ):
-            ConfigResolver(config)
 
 
 class TestConfigResolverStaticConfigurations:
@@ -395,7 +307,6 @@ class TestConfigResolverDynamicConfigurations:
             redirect_uri="https://{tenant_name}.manual.com/callback",  # Fixed: Added tenant token
             custom_application_login_page_url="https://manual.com/custom",
             is_application_custom_domain_active=False,
-            parse_tenant_from_root_domain="manual.com",
         )
 
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
@@ -705,62 +616,6 @@ class TestConfigResolverDynamicValidation:
             result = await resolver.get_redirect_uri()
             assert result == "https://manual.example.com/callback"
 
-    @pytest.mark.asyncio
-    async def test_validate_resolved_config_with_tenant_domain(self):
-        """Test validation of resolved config with tenant domain parsing."""
-        # SDK config without tenant tokens
-        sdk_config = SdkConfiguration(
-            login_url="https://sdk.example.com/login",
-            redirect_uri="https://sdk.example.com/callback",
-            is_application_custom_domain_active=False,
-        )
-
-        # Manual config with tenant domain parsing
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
-            mock_client_class.return_value = mock_client
-
-            resolver = ConfigResolver(config)
-
-            with pytest.raises(WristbandError) as exc_info:
-                await resolver.get_login_url()
-
-            assert exc_info.value.error == "config_validation_error"
-            assert "must contain the" in exc_info.value.error_description
-            assert "tenant_name" in exc_info.value.error_description
-
-    @pytest.mark.asyncio
-    async def test_validate_resolved_config_without_tenant_name(self):
-        """Test validation fails when tenant token present but parsing disabled."""
-        # SDK config with tenant tokens
-        sdk_config = SdkConfiguration(
-            login_url="https://{tenant_name}.sdk.example.com/login",
-            redirect_uri="https://sdk.example.com/callback",
-            is_application_custom_domain_active=False,
-        )
-
-        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
-            mock_client_class.return_value = mock_client
-
-            resolver = ConfigResolver(self.config)
-
-            with pytest.raises(WristbandError) as exc_info:
-                await resolver.get_login_url()
-
-            assert exc_info.value.error == "config_validation_error"
-            assert "cannot contain the" in exc_info.value.error_description
-            assert "tenant_name" in exc_info.value.error_description
-
 
 class TestConfigResolverEdgeCases:
     """Test cases for edge cases and integration scenarios."""
@@ -822,7 +677,6 @@ class TestConfigResolverEdgeCases:
             client_secret="test_secret",
             wristband_application_vanity_domain="test.wristband.dev",
             custom_application_login_page_url="",
-            parse_tenant_from_root_domain="",
         )
 
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
@@ -895,7 +749,6 @@ class TestConfigResolverEdgeCases:
             client_secret="test_secret",
             wristband_application_vanity_domain="test.wristband.dev",
             login_url="https://{tenant_name}.manual.com/login",
-            parse_tenant_from_root_domain="manual.com",
         )
 
         # SDK config would fail validation if used
@@ -973,200 +826,265 @@ class TestConfigResolverEdgeCases:
             assert results[1] == "https://sdk.example.com/login"
             assert results[2] == "https://sdk.example.com/callback"
 
-    def test_tenant_token_in_redirect_uri_without_parsing(self):
-        """Test redirect_uri validation without parsing."""
+
+def _strict_config(login_url: str, redirect_uri: str) -> AuthConfig:
+    return AuthConfig(
+        client_id="test_client",
+        client_secret="test_secret",
+        wristband_application_vanity_domain="test.wristband.dev",
+        auto_configure_enabled=False,
+        login_url=login_url,
+        redirect_uri=redirect_uri,
+    )
+
+
+def _mock_sdk_config_client(mock_client_class: Mock, sdk_config: SdkConfiguration) -> None:
+    mock_client = Mock()
+    mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
+    mock_client_class.return_value = mock_client
+
+
+class TestConfigResolverTenantPlaceholderValidation:
+    """Test cases for {tenant_name} placeholder validation in login_url and redirect_uri."""
+
+    def test_redirect_uri_must_contain_placeholder_when_login_url_does(self):
+        with pytest.raises(
+            TypeError,
+            match=re.escape(
+                'The [redirect_uri] must contain the "{tenant_name}" placeholder when the [login_url] contains it.'
+            ),
+        ):
+            ConfigResolver(_strict_config("https://{tenant_name}.test.com/login", "https://test.com/callback"))
+
+    def test_redirect_uri_cannot_contain_placeholder_when_login_url_does_not(self):
+        with pytest.raises(
+            TypeError,
+            match=re.escape(
+                'The [redirect_uri] cannot contain the "{tenant_name}" placeholder when the [login_url] '
+                "does not contain it."
+            ),
+        ):
+            ConfigResolver(_strict_config("https://test.com/login", "https://{tenant_name}.test.com/callback"))
+
+    @pytest.mark.parametrize(
+        "login_url",
+        [
+            "https://app.{tenant_name}.test.com/login",
+            "https://test.com/{tenant_name}/login",
+            "https://{tenant_name}/login",
+            "https://{tenant_name}.test.com/{tenant_name}/login",
+        ],
+    )
+    def test_login_url_placeholder_must_be_leftmost_part_of_hostname_once(self, login_url):
+        with pytest.raises(
+            TypeError,
+            match=re.escape(
+                'The [login_url] can only contain the "{tenant_name}" placeholder once, '
+                "as the leftmost part of its hostname."
+            ),
+        ):
+            ConfigResolver(_strict_config(login_url, "https://{tenant_name}.test.com/callback"))
+
+    def test_redirect_uri_placeholder_must_be_leftmost_part_of_hostname(self):
+        with pytest.raises(TypeError, match=re.escape("The [redirect_uri] can only contain")):
+            ConfigResolver(
+                _strict_config("https://{tenant_name}.test.com/login", "https://test.com/{tenant_name}/callback")
+            )
+
+    def test_both_urls_with_placeholder_pass(self):
+        resolver = ConfigResolver(
+            _strict_config("http://{tenant_name}.localhost:6001/login", "http://{tenant_name}.localhost:6001/callback")
+        )
+        assert resolver is not None
+
+    def test_partial_validation_checks_placeholder_position(self):
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
             wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://test.com/login",
-            redirect_uri="https://{tenant_name}.test.com/callback",
+            login_url="https://app.{tenant_name}.test.com/login",
         )
-
-        with pytest.raises(
-            TypeError, match=re.escape('cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
+        with pytest.raises(TypeError, match=re.escape("The [login_url] can only contain")):
             ConfigResolver(config)
 
-    def test_tenant_token_in_login_url_partial_validation(self):
-        """Test partial validation login_url without parsing."""
+    def test_partial_validation_compares_both_urls_when_provided(self):
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            login_url="https://{tenant_name}.test.com/login",
+            redirect_uri="https://test.com/callback",
+        )
+        with pytest.raises(TypeError, match=re.escape("The [redirect_uri] must contain")):
+            ConfigResolver(config)
+
+    def test_partial_validation_allows_only_one_url(self):
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
             wristband_application_vanity_domain="test.wristband.dev",
             login_url="https://{tenant_name}.test.com/login",
         )
+        assert ConfigResolver(config) is not None
 
-        with pytest.raises(
-            TypeError, match=re.escape('cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
-            ConfigResolver(config)
-
-    def test_tenant_token_missing_in_redirect_uri_partial_validation(self):
-        """Test partial validation when redirect_uri missing tenant token but parsing enabled."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            redirect_uri="https://test.com/callback",  # no tenant token
-            parse_tenant_from_root_domain="test.com",  # parsing enabled
-        )
-
-        with pytest.raises(
-            TypeError, match=re.escape('must contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
-            ConfigResolver(config)
-
-    def test_redirect_uri_token_present_without_parsing(self):
-        """Test redirect_uri has tenant token but parsing disabled."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            redirect_uri="https://{tenant_name}.test.com/callback",  # has tenant token
-            # parse_tenant_from_root_domain is None/empty - parsing disabled
-        )
-
-        with pytest.raises(
-            TypeError, match=re.escape('cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
-            ConfigResolver(config)
+    def test_tenant_domain_placeholder_is_no_longer_treated_as_a_placeholder(self):
+        # {tenant_domain} is no longer a placeholder, so the redirect_uri {tenant_name} placeholder has no match.
+        with pytest.raises(TypeError, match=re.escape("The [redirect_uri] cannot contain")):
+            ConfigResolver(
+                _strict_config("https://{tenant_domain}.test.com/login", "https://{tenant_name}.test.com/callback")
+            )
 
     @pytest.mark.asyncio
-    async def test_validate_resolved_redirect_uri_missing_token_lines(self):
-        """Test resolved config validation when redirect_uri missing tenant token."""
+    async def test_resolved_redirect_uri_must_contain_placeholder_when_manual_login_url_does(self):
         sdk_config = SdkConfiguration(
-            login_url="https://{tenant_name}.sdk.example.com/login",
-            redirect_uri="https://sdk.example.com/callback",  # missing tenant token
+            login_url="https://sdk.example.com/login",
+            redirect_uri="https://sdk.example.com/callback",
             is_application_custom_domain_active=False,
-            login_url_tenant_domain_suffix="example.com",  # This enables tenant parsing
         )
-
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
             wristband_application_vanity_domain="test.wristband.dev",
+            login_url="https://{tenant_name}.test.com/login",
         )
-
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
-            mock_client_class.return_value = mock_client
-
+            _mock_sdk_config_client(mock_client_class, sdk_config)
             resolver = ConfigResolver(config)
-
-            with pytest.raises(WristbandError) as exc_info:
-                await resolver.get_redirect_uri()  # This should trigger the validation
-
-            assert "must contain the" in exc_info.value.error_description
-            assert "redirect_uri" in exc_info.value.error_description
-
-    @pytest.mark.asyncio
-    async def test_validate_resolved_redirect_uri_has_token_without_parsing(self):
-        """Test resolved config validation when redirect_uri has token but parsing disabled."""
-        sdk_config = SdkConfiguration(
-            login_url="https://sdk.example.com/login",  # no tenant token
-            redirect_uri="https://{tenant_name}.sdk.example.com/callback",  # has tenant token
-            is_application_custom_domain_active=False,
-            login_url_tenant_domain_suffix=None,  # No tenant parsing (falsy)
-        )
-
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-        )
-
-        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
-            mock_client_class.return_value = mock_client
-
-            resolver = ConfigResolver(config)
-
             with pytest.raises(WristbandError) as exc_info:
                 await resolver.get_redirect_uri()
-
-            assert "cannot contain the" in exc_info.value.error_description
-            assert "redirect_uri" in exc_info.value.error_description
-
-
-class TestConfigResolverBackwardCompatibility:
-    """Test cases for backward compatibility with {tenant_domain} placeholder."""
-
-    def test_tenant_domain_placeholder_still_works_in_login_url(self):
-        """Test that {tenant_domain} placeholder still works for backward compatibility."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_domain}.test.com/login",
-            redirect_uri="https://{tenant_domain}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-            login_state_secret="a" * 32,
-        )
-
-        # Should not raise - {tenant_domain} still valid
-        resolver = ConfigResolver(config)
-        assert resolver is not None
-
-    def test_tenant_domain_placeholder_still_works_in_redirect_uri(self):
-        """Test that {tenant_domain} placeholder still works in redirect_uri."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_domain}.test.com/login",
-            redirect_uri="https://{tenant_domain}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        # Should not raise
-        resolver = ConfigResolver(config)
-        assert resolver is not None
-
-    def test_mixed_placeholders_not_allowed(self):
-        """Test that mixing {tenant_name} and {tenant_domain} is handled."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_name}.test.com/login",
-            redirect_uri="https://{tenant_domain}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        # Should not raise - both placeholders are valid
-        resolver = ConfigResolver(config)
-        assert resolver is not None
+        assert exc_info.value.error == "config_validation_error"
+        assert "The resolved [redirect_uri] must contain the" in exc_info.value.error_description
 
     @pytest.mark.asyncio
-    async def test_tenant_domain_in_sdk_config_still_works(self):
-        """Test that SDK config with {tenant_domain} placeholder still works."""
+    async def test_resolved_redirect_uri_cannot_contain_placeholder_when_manual_login_url_does_not(self):
         sdk_config = SdkConfiguration(
-            login_url="https://{tenant_domain}.sdk.example.com/login",
-            redirect_uri="https://{tenant_domain}.sdk.example.com/callback",
+            login_url="https://{tenant_name}.sdk.example.com/login",
+            redirect_uri="https://{tenant_name}.sdk.example.com/callback",
             is_application_custom_domain_active=False,
-            login_url_tenant_domain_suffix="example.com",
         )
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            login_url="https://test.com/login",
+        )
+        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
+            _mock_sdk_config_client(mock_client_class, sdk_config)
+            resolver = ConfigResolver(config)
+            with pytest.raises(WristbandError) as exc_info:
+                await resolver.get_redirect_uri()
+        assert "The resolved [redirect_uri] cannot contain the" in exc_info.value.error_description
 
+    @pytest.mark.asyncio
+    async def test_sdk_config_urls_are_trusted_as_is(self):
+        sdk_config = SdkConfiguration(
+            login_url="https://{tenant_name}.sdk.example.com/login",
+            redirect_uri="https://sdk.example.com/callback",
+            is_application_custom_domain_active=False,
+        )
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
             wristband_application_vanity_domain="test.wristband.dev",
         )
+        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
+            _mock_sdk_config_client(mock_client_class, sdk_config)
+            resolver = ConfigResolver(config)
+            assert await resolver.get_login_url() == "https://{tenant_name}.sdk.example.com/login"
 
+
+class TestConfigResolverDerivedAndAppLevelConfigs:
+    """Test cases for configs derived from login_url and application-level authorization requests."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "login_url,expected_root_domain,expected_fallback_login_url",
+        [
+            ("https://{tenant_name}.myapp.com/auth/login", "myapp.com", "https://myapp.com/auth/login"),
+            ("http://{tenant_name}.localhost:6001/auth/login", "localhost", "http://localhost:6001/auth/login"),
+            ("https://myapp.com/auth/login", "", ""),
+        ],
+    )
+    async def test_root_domain_and_fallback_login_url_are_derived_from_manual_login_url(
+        self, login_url, expected_root_domain, expected_fallback_login_url
+    ):
+        redirect_uri = login_url.replace("/auth/login", "/auth/callback")
+        resolver = ConfigResolver(_strict_config(login_url, redirect_uri))
+        assert await resolver.get_parse_tenant_from_root_domain() == expected_root_domain
+        assert await resolver.get_fallback_login_url() == expected_fallback_login_url
+
+    @pytest.mark.asyncio
+    async def test_root_domain_and_fallback_login_url_come_from_sdk_config_when_login_url_not_manual(self):
+        sdk_config = SdkConfiguration(
+            login_url="https://{tenant_name}.sdk.example.com/login",
+            redirect_uri="https://{tenant_name}.sdk.example.com/callback",
+            is_application_custom_domain_active=False,
+            login_url_tenant_domain_suffix="sdk.example.com",
+            fallback_login_url="https://sdk.example.com/login",
+        )
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
+            _mock_sdk_config_client(mock_client_class, sdk_config)
+            resolver = ConfigResolver(config)
+            assert await resolver.get_parse_tenant_from_root_domain() == "sdk.example.com"
+            assert await resolver.get_fallback_login_url() == "https://sdk.example.com/login"
+
+    @pytest.mark.asyncio
+    async def test_application_authorization_requests_enabled_defaults_to_true_without_auto_configure(self):
+        resolver = ConfigResolver(_strict_config("https://test.com/login", "https://test.com/callback"))
+        assert await resolver.get_application_authorization_requests_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_application_authorization_requests_enabled_manual_value_takes_precedence(self):
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            application_authorization_requests_enabled=False,
+        )
         with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
             mock_client = Mock()
-            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
+            mock_client.get_sdk_configuration = AsyncMock()
             mock_client_class.return_value = mock_client
-
             resolver = ConfigResolver(config)
+            assert await resolver.get_application_authorization_requests_enabled() is False
+            mock_client.get_sdk_configuration.assert_not_called()
 
-            # Should not raise validation error
-            result = await resolver.get_login_url()
-            assert result == "https://{tenant_domain}.sdk.example.com/login"
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sdk_value", [True, False])
+    async def test_application_authorization_requests_enabled_from_sdk_config(self, sdk_value):
+        sdk_config = SdkConfiguration(
+            login_url="https://sdk.example.com/login",
+            redirect_uri="https://sdk.example.com/callback",
+            is_application_custom_domain_active=False,
+            application_authorization_requests_enabled=sdk_value,
+        )
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+        )
+        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
+            _mock_sdk_config_client(mock_client_class, sdk_config)
+            resolver = ConfigResolver(config)
+            assert await resolver.get_application_authorization_requests_enabled() is sdk_value
+
+    def test_sdk_configuration_from_api_response_defaults_app_level_to_true(self):
+        sdk_config = SdkConfiguration.from_api_response({"loginUrl": "https://sdk.example.com/login"})
+        assert sdk_config.application_authorization_requests_enabled is True
+        assert sdk_config.fallback_login_url is None
+
+    def test_sdk_configuration_from_api_response_reads_app_level_fields(self):
+        sdk_config = SdkConfiguration.from_api_response(
+            {
+                "loginUrl": "https://{tenant_name}.sdk.example.com/login",
+                "applicationAuthorizationRequestsEnabled": False,
+                "fallbackLoginUrl": "https://sdk.example.com/login",
+            }
+        )
+        assert sdk_config.application_authorization_requests_enabled is False
+        assert sdk_config.fallback_login_url == "https://sdk.example.com/login"

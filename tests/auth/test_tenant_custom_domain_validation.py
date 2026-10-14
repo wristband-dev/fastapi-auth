@@ -18,6 +18,7 @@ class TestLoginTenantCustomDomainValidation:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -175,6 +176,7 @@ class TestCallbackTenantCustomDomainValidation:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
@@ -264,6 +266,7 @@ class TestLogoutTenantCustomDomainValidation:
             login_url="https://auth.example.com/login",
             redirect_uri="https://app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
+            application_authorization_requests_enabled=False,
         )
         self.wristband_auth = WristbandAuth(self.auth_config)
 
