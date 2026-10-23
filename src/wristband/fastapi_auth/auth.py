@@ -6,7 +6,7 @@ import secrets
 import time
 from datetime import datetime
 from typing import Any, Awaitable, Callable, List, Literal, Optional, Tuple, cast
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 from fastapi import HTTPException, Request, Response, status
@@ -64,7 +64,11 @@ class WristbandAuth:
     _cookie_prefix: str = "login#"
     _login_state_cookie_separator: str = "#"
     _return_url_char_max_len = 450
-    _tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
+    _tenant_placeholder_pattern = re.compile(r"\{tenant_name\}")
+    # Per the WHATWG URL Standard, browsers strip these from both ends of a URL and drop tabs and newlines anywhere.
+    _url_c0_control_or_space = "".join(chr(code) for code in range(0x21))
+    _url_tab_or_newline_pattern = re.compile(r"[\t\n\r]")
+    _url_scheme_pattern = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
 
     def __init__(self, auth_config: AuthConfig) -> None:
         self._config_resolver = ConfigResolver(auth_config)
@@ -134,13 +138,14 @@ class WristbandAuth:
         parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
         redirect_uri = await self._config_resolver.get_redirect_uri()
         scopes = self._config_resolver.get_scopes()
+        trust_proxy_headers = self._config_resolver.get_trust_proxy_headers()
         wristband_application_vanity_domain = self._config_resolver.get_wristband_application_vanity_domain()
 
         # Determine which domain-related values are present as it will be needed for the authorize URL.
         tenant_custom_domain: str = await self._resolve_valid_tenant_custom_domain(
             self._resolve_tenant_custom_domain_param(request)
         )
-        tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain)
+        tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain, trust_proxy_headers)
         default_tenant_custom_domain: Optional[str] = config.default_tenant_custom_domain
         default_tenant_name: Optional[str] = config.default_tenant_name
 
@@ -232,9 +237,13 @@ class WristbandAuth:
         """
 
         # Fetch our SDK configs
+        application_authorization_requests_enabled = (
+            await self._config_resolver.get_application_authorization_requests_enabled()
+        )
         login_url = await self._config_resolver.get_login_url()
         parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
         token_expiration_buffer = self._config_resolver.get_token_expiration_buffer()
+        trust_proxy_headers = self._config_resolver.get_trust_proxy_headers()
 
         # Extract and validate Query Params from wristband callback
         code: Optional[str] = self._assert_single_param(request, "code")
@@ -258,7 +267,9 @@ class WristbandAuth:
         tenant_custom_domain_param = await self._resolve_valid_tenant_custom_domain(tenant_custom_domain_param or "")
 
         # Resolve and validate tenant name
-        resolved_tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain)
+        resolved_tenant_name: str = self._resolve_tenant_name(
+            request, parse_tenant_from_root_domain, trust_proxy_headers
+        )
         if not resolved_tenant_name:
             if parse_tenant_from_root_domain:
                 raise WristbandError("missing_tenant_subdomain", "Callback request URL is missing a tenant subdomain")
@@ -327,6 +338,16 @@ class WristbandAuth:
             expires_in = token_response.expires_in - token_expiration_buffer
             expires_at = int((time.time() + expires_in) * 1000)
 
+            # Prevent open redirects by validating the return_url against allowed hosts.
+            validated_return_url: Optional[str] = self._validate_return_url(
+                request,
+                login_state.return_url,
+                resolved_tenant_name,
+                application_authorization_requests_enabled,
+                trust_proxy_headers,
+                parse_tenant_from_root_domain,
+            )
+
             # Return the callback data and result
             return CompletedCallbackResult(
                 type=CallbackResultType.COMPLETED,
@@ -339,7 +360,7 @@ class WristbandAuth:
                     user_info=userinfo,
                     custom_state=login_state.custom_state,
                     refresh_token=token_response.refresh_token,
-                    return_url=login_state.return_url,
+                    return_url=validated_return_url,
                     tenant_custom_domain=tenant_custom_domain_param or None,
                 ),
             )
@@ -424,6 +445,7 @@ class WristbandAuth:
         is_application_custom_domain_active = await self._config_resolver.get_is_application_custom_domain_active()
         login_url = await self._config_resolver.get_login_url()
         parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
+        trust_proxy_headers = self._config_resolver.get_trust_proxy_headers()
         wristband_application_vanity_domain = self._config_resolver.get_wristband_application_vanity_domain()
 
         # Revoke refresh token, if present
@@ -437,8 +459,8 @@ class WristbandAuth:
         if config.state and len(config.state) > 512:
             raise ValueError("The [state] logout config cannot exceed 512 characters.")
 
-        # Get host and determine tenant domain
-        tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain)
+        # Get host and determine tenant name
+        tenant_name: str = self._resolve_tenant_name(request, parse_tenant_from_root_domain, trust_proxy_headers)
         tenant_custom_domain: str = await self._resolve_valid_tenant_custom_domain(
             self._resolve_tenant_custom_domain_param(request)
         )
@@ -796,9 +818,31 @@ class WristbandAuth:
         is_valid = await self._wristband_api.validate_tenant_custom_domain(tenant_custom_domain)
         return tenant_custom_domain if is_valid else ""
 
-    def _resolve_tenant_name(self, request: Request, parse_tenant_from_root_domain: Optional[str]) -> str:
+    def _get_request_host(self, request: Request, trust_proxy_headers: bool) -> str:
+        """
+        Resolves the host the browser used for the incoming request, including any port.
+
+        By default, only the Host header is used. When trust_proxy_headers is enabled, the first value of the
+        X-Forwarded-Host header is used instead, falling back to the Host header. It should only be enabled
+        when the application runs behind a reverse proxy that sets or overwrites X-Forwarded-Host, since
+        clients can send the header themselves.
+
+        Returns an empty string if no host can be determined.
+        """
+        if trust_proxy_headers:
+            # Proxies may provide a comma-separated list of forwarded hosts.
+            forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+
+            if forwarded_host:
+                return forwarded_host
+
+        return request.headers.get("host") or ""
+
+    def _resolve_tenant_name(
+        self, request: Request, parse_tenant_from_root_domain: Optional[str], trust_proxy_headers: bool
+    ) -> str:
         if parse_tenant_from_root_domain and parse_tenant_from_root_domain.strip():
-            host = str(request.url.netloc)
+            host = self._get_request_host(request, trust_proxy_headers)
 
             # Strip off the port if it exists
             hostname = host.split(":")[0]
@@ -837,6 +881,144 @@ class WristbandAuth:
             return None
 
         return resolved_return_url
+
+    def _get_request_protocol(self, request: Request) -> str:
+        """
+        Resolves the protocol the browser used for the incoming request.
+
+        The protocol comes from the request URL's scheme, which follows the ASGI server's own
+        proxy settings. TLS often terminates at a reverse proxy or hosting platform, so the
+        connection from the proxy to FastAPI can be plain HTTP even when the browser used HTTPS.
+        Uvicorn applies X-Forwarded-Proto to the scheme only for proxies it trusts, which by
+        default is a proxy on the same machine. A proxy elsewhere must be trusted through
+        Uvicorn's --forwarded-allow-ips setting. X-Forwarded-Proto is not read here, since
+        clients can send the header themselves.
+
+        This value is used only to validate the post-callback return_url, not to make
+        access-control decisions.
+        """
+        return "https" if request.url.scheme == "https" else "http"
+
+    def _resolve_absolute_return_url(self, return_url: str, request_origin: str, protocol: str) -> Optional[str]:
+        """
+        Resolves a return_url to an absolute URL with the same host a browser would redirect to.
+
+        Browsers parse URLs per the WHATWG URL Standard, which urllib does not follow. Browsers
+        strip leading/trailing control characters and spaces, drop tabs and newlines, treat
+        backslashes as forward slashes, and treat two or more slashes after the scheme (or at the
+        start of a relative URL) as the start of the host. Without this normalization, URLs such as
+        "////evil.com", "https:///evil.com", and "/\\evil.com" would look like same-host paths to
+        urllib while browsers would redirect to evil.com.
+
+        Returns the absolute URL, or None if its scheme doesn't match the request protocol.
+        """
+        url = self._url_tab_or_newline_pattern.sub("", return_url.strip(self._url_c0_control_or_space))
+        url = url.replace("\\", "/")
+
+        scheme_match = self._url_scheme_pattern.match(url)
+        if scheme_match:
+            if scheme_match.group(1).lower() != protocol:
+                return None
+            url = url[scheme_match.end() :]
+
+        # Browsers ignore any extra slashes before the host. This is resolved without urljoin(),
+        # which would treat an empty host as relative and fall back to the request origin's host.
+        if url.startswith("//"):
+            return f"{protocol}://{url.lstrip('/')}"
+
+        # Anything else is a path relative to the request origin.
+        return urljoin(request_origin, url)
+
+    def _validate_return_url(
+        self,
+        request: Request,
+        return_url: Optional[str],
+        tenant_name: str,
+        application_authorization_requests_enabled: bool,
+        trust_proxy_headers: bool,
+        parse_tenant_from_root_domain: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Validates the return_url that the auth callback could potentially redirect the browser
+        to after a successful login, preventing open redirects.
+
+        An attacker can supply an arbitrary return_url through a crafted login link. The
+        return_url hostname must match either the hostname that served this request or the
+        configured root domain, so an external host is rejected independently of the
+        protocol check. The protocol check additionally requires the return_url to use the
+        same scheme as the incoming request as resolved by _get_request_protocol, which blocks
+        downgrades such as HTTPS to HTTP when that protocol is resolved correctly.
+
+        This helper does not perform the redirect. The validated URL is returned to the
+        application through the callback result, and the application decides whether and
+        how to use it. Because applications commonly pass it straight to a redirect, this
+        validation is the main safeguard against open redirects, not an optional extra.
+
+        Returns the validated URL, or None if the return_url is missing, malformed, or
+        points to a host that isn't allowed.
+        """
+        # Safety check: a tenant name is required for validation.
+        if not tenant_name:
+            raise WristbandError("missing_tenant_name", "Tenant name is required to validate return_url")
+
+        # A return URL is optional during login.
+        if not return_url:
+            return None
+
+        host = self._get_request_host(request, trust_proxy_headers)
+
+        # Without a host, the request origin cannot be established safely.
+        if not host:
+            return None
+
+        try:
+            # Resolve the incoming request's protocol, accounting for reverse proxies.
+            protocol = self._get_request_protocol(request)
+
+            # Parse the request origin rather than splitting the host on colons,
+            # which would mishandle IPv6 addresses and ports.
+            request_origin = f"{protocol}://{host}"
+            request_hostname = urlsplit(request_origin).hostname
+
+            # Resolve relative return URLs against the incoming request origin.
+            # Absolute URLs ignore the base.
+            absolute_return_url = self._resolve_absolute_return_url(return_url, request_origin, protocol)
+            if absolute_return_url is None:
+                return None
+
+            url = urlsplit(absolute_return_url)
+
+            # Accessing the port validates it, so malformed ports are rejected.
+            port = url.port
+
+            # Only allow redirects to the configured root domain or the exact
+            # hostname that served this request, using the same protocol.
+            # This rejects external hosts and HTTP/HTTPS protocol downgrades.
+            if (
+                url.scheme != protocol
+                or not url.hostname
+                or (url.hostname != parse_tenant_from_root_domain and url.hostname != request_hostname)
+            ):
+                return None
+
+            # When authorization requests are enabled, rewrite a return URL
+            # targeting the root domain to the resolved tenant's subdomain,
+            # preserving the remaining URL components.
+            if (
+                parse_tenant_from_root_domain
+                and application_authorization_requests_enabled
+                and url.hostname == parse_tenant_from_root_domain
+            ):
+                userinfo, at_sign, _ = url.netloc.rpartition("@")
+                port_suffix = f":{port}" if port is not None else ""
+                netloc = f"{userinfo}{at_sign}{tenant_name}.{url.hostname}{port_suffix}"
+                return urlunsplit(url._replace(netloc=netloc))
+
+            # Preserve the original URL when no tenant rewrite is necessary.
+            return return_url
+        except ValueError:
+            # Malformed origins or return URLs are treated as unsafe.
+            return None
 
     def _create_login_state(
         self,

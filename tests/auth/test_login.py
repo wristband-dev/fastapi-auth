@@ -105,7 +105,7 @@ class TestWristbandAuthLogin:
 
     @pytest.mark.asyncio
     async def test_login_with_tenant_name_query_creates_oauth_url(self) -> None:
-        """Test login creates full OAuth URL when tenant domain is available."""
+        """Test login creates full OAuth URL when tenant name is available."""
         request = create_mock_request("/login", query_params={"tenant_name": "test-tenant"})
 
         # Mock all the config resolver methods
@@ -416,8 +416,8 @@ class TestWristbandAuthLogin:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="custom.com",
             scopes=["openid", "email"],
@@ -450,7 +450,7 @@ class TestWristbandAuthLogin:
             mock_custom_url.return_value = None
             mock_custom_domain.return_value = False
             mock_parse_tenant.return_value = "custom.com"
-            mock_redirect_uri.return_value = "https://{tenant_domain}.app.example.com/callback"
+            mock_redirect_uri.return_value = "https://{tenant_name}.app.example.com/callback"
 
             response = await temp_wristband_auth.login(request, login_config)
 
@@ -459,7 +459,7 @@ class TestWristbandAuthLogin:
 
             # Validate query params
             assert_authorize_query_params(
-                query_params, "test_client_id", "https://{tenant_domain}.app.example.com/callback", "openid email"
+                query_params, "test_client_id", "https://{tenant_name}.app.example.com/callback", "openid email"
             )
 
             # Validate login state cookie is set
@@ -467,7 +467,7 @@ class TestWristbandAuthLogin:
 
     @pytest.mark.asyncio
     async def test_login_with_tenant_name_param(self) -> None:
-        """02b: Test login uses tenant domain param as next priority."""
+        """02b: Test login uses tenant name param as next priority."""
         request = create_mock_request("/login", query_params={"tenant_name": "tenantA"})
         login_config = LoginConfig(
             default_tenant_name="default-tenant",
@@ -549,7 +549,7 @@ class TestWristbandAuthLogin:
 
     @pytest.mark.asyncio
     async def test_login_with_default_tenant_name_only(self) -> None:
-        """04: Test login uses default tenant domain from LoginConfig when no other tenant values found."""
+        """04: Test login uses default tenant name from LoginConfig when no other tenant values found."""
         request = create_mock_request("/login")
         login_config = LoginConfig(default_tenant_name="default-tenant")
 
@@ -1288,8 +1288,8 @@ class TestWristbandAuthBuildTenantLoginUrl:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
@@ -1302,15 +1302,15 @@ class TestWristbandAuthBuildTenantLoginUrl:
         )
 
         # The tenant login URL building logic is embedded in callback method
-        # We can test this indirectly by checking how tenant domain resolution works
-        tenant_name = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        # We can test this indirectly by checking how tenant name resolution works
+        tenant_name = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
         assert tenant_name == "tenant1"
 
     def test_build_tenant_login_url_without_subdomain_parsing(self) -> None:
         """Test tenant login URL building without subdomain parsing."""
         request = create_mock_request("/callback", query_params={"state": "test_state", "tenant_name": "tenant1"})
 
-        tenant_name = self.wristband_auth._resolve_tenant_name(request, None)
+        tenant_name = self.wristband_auth._resolve_tenant_name(request, None, False)
         assert tenant_name == "tenant1"
 
     def test_build_tenant_login_url_with_tenant_custom_domain(self) -> None:
@@ -1351,15 +1351,15 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="tenant1.auth.example.com")
-        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
 
         assert result == "tenant1"
 
@@ -1367,7 +1367,7 @@ class TestWristbandAuthResolveTenantMethods:
         """Test _resolve_tenant_name gets tenant from query parameter."""
         request = create_mock_request("/login", query_params={"tenant_name": "tenant1"})
 
-        result = self.wristband_auth._resolve_tenant_name(request, None)
+        result = self.wristband_auth._resolve_tenant_name(request, None, False)
 
         assert result == "tenant1"
 
@@ -1403,7 +1403,7 @@ class TestWristbandAuthResolveTenantMethods:
         mock_request.query_params.getlist = lambda key: ["tenant1", "tenant2"] if key == "tenant_name" else []
 
         with pytest.raises(TypeError, match="More than one \\[tenant_name\\] query parameter was encountered"):
-            self.wristband_auth._resolve_tenant_name(mock_request, None)
+            self.wristband_auth._resolve_tenant_name(mock_request, None, False)
 
     def test_resolve_tenant_name_from_subdomain_with_port(self) -> None:
         """Test _resolve_tenant_name extracts tenant from subdomain and strips port."""
@@ -1412,15 +1412,15 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="tenant1.auth.example.com:8080")
-        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
 
         assert result == "tenant1"
 
@@ -1431,15 +1431,15 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="tenant1.auth.example.com:443")
-        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
 
         assert result == "tenant1"
 
@@ -1450,15 +1450,15 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="tenant1.wrong.com")
-        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
 
         assert result == ""
 
@@ -1469,15 +1469,15 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="auth.example.com")
-        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
 
         assert result == ""
 
@@ -1488,15 +1488,15 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="localhost")
-        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
 
         assert result == ""
 
@@ -1507,15 +1507,15 @@ class TestWristbandAuthResolveTenantMethods:
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
         request = create_mock_request("/login", host="localhost:8080")
-        result = wristband_auth._resolve_tenant_name(request, "auth.example.com")
+        result = wristband_auth._resolve_tenant_name(request, "auth.example.com", False)
 
         assert result == ""
 

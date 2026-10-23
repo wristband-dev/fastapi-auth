@@ -51,6 +51,13 @@ class AuthConfig(BaseModel):
         token_expiration_buffer: Buffer time (in seconds) to subtract from the access token’s expiration time.
             This causes the token to be treated as expired before its actual expiration, helping to avoid token
             expiration during API calls. Defaults to 60 seconds.
+        trust_proxy_headers: Flag indicating whether to trust the X-Forwarded-Host header when determining the host
+            of an incoming request. Defaults to False. When False, the host is read from the Host header only. When
+            True, the first value of the X-Forwarded-Host header is used, falling back to the Host header. The host
+            is used to resolve tenant subdomains and to validate return URLs. Only enable this when your application
+            runs behind a reverse proxy that sets or overwrites the X-Forwarded-Host header. The request protocol is
+            always read from the request URL, so configure your ASGI server to trust your proxy's forwarded protocol
+            (e.g. Uvicorn's --forwarded-allow-ips) when TLS terminates at the proxy.
     """
 
     application_authorization_requests_enabled: Optional[bool] = None
@@ -68,6 +75,7 @@ class AuthConfig(BaseModel):
     redirect_uri: Optional[str] = None
     scopes: List[str] = Field(default=["openid", "offline_access", "email"])
     token_expiration_buffer: int = 60
+    trust_proxy_headers: bool = False
 
 
 class SdkConfiguration(BaseModel):

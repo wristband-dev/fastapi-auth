@@ -149,7 +149,7 @@ class TestConfigResolverValidation:
             ConfigResolver(config)
 
     def test_validate_tenant_name_token_missing_in_login_url(self):
-        """Test validation fails when tenant domain token missing from login_url."""
+        """Test validation fails when tenant name token missing from login_url."""
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
@@ -163,14 +163,14 @@ class TestConfigResolverValidation:
         with pytest.raises(
             TypeError,
             match=re.escape(
-                'The [login_url] must contain the "{tenant_name}" or "{tenant_domain}" '
+                'The [login_url] must contain the "{tenant_name}" '
                 "placeholder when using the [parse_tenant_from_root_domain] config."
             ),
         ):
             ConfigResolver(config)
 
     def test_validate_tenant_name_token_missing_in_redirect_uri(self):
-        """Test validation fails when tenant domain token missing from redirect_uri."""
+        """Test validation fails when tenant name token missing from redirect_uri."""
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
@@ -183,12 +183,12 @@ class TestConfigResolverValidation:
 
         with pytest.raises(
             TypeError,
-            match=re.escape('The [redirect_uri] must contain the "{tenant_name}" or "{tenant_domain}" placeholder'),
+            match=re.escape('The [redirect_uri] must contain the "{tenant_name}" placeholder'),
         ):
             ConfigResolver(config)
 
     def test_validate_tenant_name_token_present_without_parsing(self):
-        """Test validation fails when tenant domain token present but parsing disabled."""
+        """Test validation fails when tenant name token present but parsing disabled."""
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
@@ -200,7 +200,7 @@ class TestConfigResolverValidation:
 
         with pytest.raises(
             TypeError,
-            match=re.escape('The [login_url] cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder'),
+            match=re.escape('The [login_url] cannot contain the "{tenant_name}" placeholder'),
         ):
             ConfigResolver(config)
 
@@ -217,7 +217,7 @@ class TestConfigResolverValidation:
 
         with pytest.raises(
             TypeError,
-            match=re.escape('The [login_url] must contain the "{tenant_name}" or "{tenant_domain}" placeholder'),
+            match=re.escape('The [login_url] must contain the "{tenant_name}" placeholder'),
         ):
             ConfigResolver(config)
 
@@ -370,6 +370,22 @@ class TestConfigResolverStaticConfigurations:
         )
         resolver = ConfigResolver(config)
         assert resolver.get_token_expiration_buffer() == 60
+
+    def test_get_trust_proxy_headers_default(self):
+        """Test get_trust_proxy_headers returns default False."""
+        assert self.resolver.get_trust_proxy_headers() is False
+
+    @pytest.mark.parametrize("trust_proxy_headers", [True, False])
+    def test_get_trust_proxy_headers_when_set(self, trust_proxy_headers):
+        """Test get_trust_proxy_headers returns the configured value."""
+        config = AuthConfig(
+            client_id="test_client",
+            client_secret="test_secret",
+            wristband_application_vanity_domain="test.wristband.dev",
+            trust_proxy_headers=trust_proxy_headers,
+        )
+        resolver = ConfigResolver(config)
+        assert resolver.get_trust_proxy_headers() is trust_proxy_headers
 
 
 class TestConfigResolverDynamicConfigurations:
@@ -840,8 +856,8 @@ class TestConfigResolverDynamicValidation:
             assert result == "https://manual.example.com/callback"
 
     @pytest.mark.asyncio
-    async def test_validate_resolved_config_with_tenant_domain(self):
-        """Test validation of resolved config with tenant domain parsing."""
+    async def test_validate_resolved_config_with_tenant_subdomain(self):
+        """Test validation of resolved config with tenant subdomain parsing."""
         # SDK config without tenant tokens
         sdk_config = SdkConfiguration(
             application_authorization_requests_enabled=False,
@@ -850,7 +866,7 @@ class TestConfigResolverDynamicValidation:
             is_application_custom_domain_active=False,
         )
 
-        # Manual config with tenant domain parsing
+        # Manual config with tenant subdomain parsing
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
@@ -1028,7 +1044,7 @@ class TestConfigResolverEdgeCases:
     @pytest.mark.asyncio
     async def test_validate_resolved_config_precedence(self):
         """Test that manual config values take precedence in validation."""
-        # Manual config has correct tenant domain token
+        # Manual config has correct tenant name token
         config = AuthConfig(
             client_id="test_client",
             client_secret="test_secret",
@@ -1125,9 +1141,7 @@ class TestConfigResolverEdgeCases:
             redirect_uri="https://{tenant_name}.test.com/callback",
         )
 
-        with pytest.raises(
-            TypeError, match=re.escape('cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
+        with pytest.raises(TypeError, match=re.escape('cannot contain the "{tenant_name}" placeholder')):
             ConfigResolver(config)
 
     def test_tenant_token_in_login_url_partial_validation(self):
@@ -1139,9 +1153,7 @@ class TestConfigResolverEdgeCases:
             login_url="https://{tenant_name}.test.com/login",
         )
 
-        with pytest.raises(
-            TypeError, match=re.escape('cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
+        with pytest.raises(TypeError, match=re.escape('cannot contain the "{tenant_name}" placeholder')):
             ConfigResolver(config)
 
     def test_tenant_token_missing_in_redirect_uri_partial_validation(self):
@@ -1154,9 +1166,7 @@ class TestConfigResolverEdgeCases:
             parse_tenant_from_root_domain="test.com",  # parsing enabled
         )
 
-        with pytest.raises(
-            TypeError, match=re.escape('must contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
+        with pytest.raises(TypeError, match=re.escape('must contain the "{tenant_name}" placeholder')):
             ConfigResolver(config)
 
     def test_redirect_uri_token_present_without_parsing(self):
@@ -1169,9 +1179,7 @@ class TestConfigResolverEdgeCases:
             # parse_tenant_from_root_domain is None/empty - parsing disabled
         )
 
-        with pytest.raises(
-            TypeError, match=re.escape('cannot contain the "{tenant_name}" or "{tenant_domain}" placeholder')
-        ):
+        with pytest.raises(TypeError, match=re.escape('cannot contain the "{tenant_name}" placeholder')):
             ConfigResolver(config)
 
     @pytest.mark.asyncio
@@ -1233,87 +1241,6 @@ class TestConfigResolverEdgeCases:
 
             assert "cannot contain the" in exc_info.value.error_description
             assert "redirect_uri" in exc_info.value.error_description
-
-
-class TestConfigResolverBackwardCompatibility:
-    """Test cases for backward compatibility with {tenant_domain} placeholder."""
-
-    def test_tenant_domain_placeholder_still_works_in_login_url(self):
-        """Test that {tenant_domain} placeholder still works for backward compatibility."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_domain}.test.com/login",
-            redirect_uri="https://{tenant_domain}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-            login_state_secret="a" * 32,
-        )
-
-        # Should not raise - {tenant_domain} still valid
-        resolver = ConfigResolver(config)
-        assert resolver is not None
-
-    def test_tenant_domain_placeholder_still_works_in_redirect_uri(self):
-        """Test that {tenant_domain} placeholder still works in redirect_uri."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_domain}.test.com/login",
-            redirect_uri="https://{tenant_domain}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        # Should not raise
-        resolver = ConfigResolver(config)
-        assert resolver is not None
-
-    def test_mixed_placeholders_not_allowed(self):
-        """Test that mixing {tenant_name} and {tenant_domain} is handled."""
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-            auto_configure_enabled=False,
-            login_url="https://{tenant_name}.test.com/login",
-            redirect_uri="https://{tenant_domain}.test.com/callback",
-            parse_tenant_from_root_domain="test.com",
-        )
-
-        # Should not raise - both placeholders are valid
-        resolver = ConfigResolver(config)
-        assert resolver is not None
-
-    @pytest.mark.asyncio
-    async def test_tenant_domain_in_sdk_config_still_works(self):
-        """Test that SDK config with {tenant_domain} placeholder still works."""
-        sdk_config = SdkConfiguration(
-            application_authorization_requests_enabled=False,
-            login_url="https://{tenant_domain}.sdk.example.com/login",
-            redirect_uri="https://{tenant_domain}.sdk.example.com/callback",
-            is_application_custom_domain_active=False,
-            login_url_tenant_domain_suffix="example.com",
-        )
-
-        config = AuthConfig(
-            client_id="test_client",
-            client_secret="test_secret",
-            wristband_application_vanity_domain="test.wristband.dev",
-        )
-
-        with patch("wristband.fastapi_auth.config_resolver.WristbandApiClient") as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_sdk_configuration = AsyncMock(return_value=sdk_config)
-            mock_client_class.return_value = mock_client
-
-            resolver = ConfigResolver(config)
-
-            # Should not raise validation error
-            result = await resolver.get_login_url()
-            assert result == "https://{tenant_domain}.sdk.example.com/login"
 
 
 class TestConfigResolverFallbackLoginUrlValidation:
@@ -1387,12 +1314,11 @@ class TestConfigResolverFallbackLoginUrlValidation:
 
         ConfigResolver(config)
 
-    @pytest.mark.parametrize("placeholder", ["{tenant_name}", "{tenant_domain}"])
-    def test_strict_rejects_fallback_with_placeholder(self, placeholder):
+    def test_strict_rejects_fallback_with_placeholder(self):
         """Test fallback_login_url cannot contain the tenant placeholder."""
         config = self._strict_config(
             application_authorization_requests_enabled=True,
-            fallback_login_url=f"https://{placeholder}.example.com/login",
+            fallback_login_url="https://{tenant_name}.example.com/login",
         )
 
         with pytest.raises(TypeError, match="The \\[fallback_login_url\\] cannot contain the"):

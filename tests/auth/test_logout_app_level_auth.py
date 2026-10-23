@@ -14,7 +14,7 @@ ROOT_DOMAIN = "yourapp.io"
 FALLBACK_LOGIN_URL = "https://fallback.yourapp.io/auth/login"
 
 
-def _subdomain_auth(placeholder: str = "{tenant_name}", **overrides: Any) -> WristbandAuth:
+def _subdomain_auth(**overrides: Any) -> WristbandAuth:
     """Create a WristbandAuth that uses tenant subdomains of ROOT_DOMAIN."""
     values: dict[str, Any] = {
         "client_id": "test_client_id",
@@ -22,8 +22,8 @@ def _subdomain_auth(placeholder: str = "{tenant_name}", **overrides: Any) -> Wri
         "login_state_secret": TEST_LOGIN_STATE_SECRET,
         "wristband_application_vanity_domain": VANITY_DOMAIN,
         "auto_configure_enabled": False,
-        "login_url": f"https://{placeholder}.{ROOT_DOMAIN}/auth/login",
-        "redirect_uri": f"https://{placeholder}.{ROOT_DOMAIN}/auth/callback",
+        "login_url": f"https://{{tenant_name}}.{ROOT_DOMAIN}/auth/login",
+        "redirect_uri": f"https://{{tenant_name}}.{ROOT_DOMAIN}/auth/callback",
         "parse_tenant_from_root_domain": ROOT_DOMAIN,
         "fallback_login_url": FALLBACK_LOGIN_URL,
         "application_authorization_requests_enabled": True,
@@ -52,12 +52,11 @@ class TestLogoutAppLevelAuthTenantSubdomains:
     """logout() when login_url contains the tenant placeholder."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("placeholder", ["{tenant_domain}", "{tenant_name}"])
-    async def test_falls_back_to_fallback_login_url_when_tenant_unresolvable(self, placeholder: str) -> None:
+    async def test_falls_back_to_fallback_login_url_when_tenant_unresolvable(self) -> None:
         """Test logout redirects to fallback_login_url, since login_url's placeholder can't be filled."""
         request = create_mock_request(f"https://{ROOT_DOMAIN}/auth/logout")
 
-        response = await _subdomain_auth(placeholder).logout(request)
+        response = await _subdomain_auth().logout(request)
 
         assert response.status_code == 302
         assert response.headers["location"] == FALLBACK_LOGIN_URL

@@ -7,8 +7,8 @@ from .exceptions import WristbandError
 from .models import AuthConfig, SdkConfiguration
 
 _default_scopes = ["openid", "offline_access", "email"]
-_tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
-_tenant_placeholder_msg = '"{tenant_name}" or "{tenant_domain}" placeholder'
+_tenant_placeholder_pattern = re.compile(r"\{tenant_name\}")
+_tenant_placeholder_msg = '"{tenant_name}" placeholder'
 
 
 class ConfigResolver:
@@ -206,7 +206,7 @@ class ConfigResolver:
                 "or ensure your Wristband OAuth2 Client has a single redirect URI configured.",
             )
 
-        # Validate the tenant domain token logic with final resolved values
+        # Validate the tenant name token logic with final resolved values
         if parse_tenant_from_root_domain:
             if not _tenant_placeholder_pattern.search(login_url):
                 raise WristbandError(
@@ -289,6 +289,10 @@ class ConfigResolver:
     def get_token_expiration_buffer(self) -> int:
         """Get the token expiration buffer in seconds."""
         return self.auth_config.token_expiration_buffer
+
+    def get_trust_proxy_headers(self) -> bool:
+        """Get whether to trust the X-Forwarded-Host header when determining the request host."""
+        return self.auth_config.trust_proxy_headers
 
     # ////////////////////////////////////
     #  DYNAMIC CONFIGURATIONS

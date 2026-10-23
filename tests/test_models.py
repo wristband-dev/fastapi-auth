@@ -88,6 +88,7 @@ def test_auth_config_defaults():
     assert config.redirect_uri is None
     assert config.scopes == ["openid", "offline_access", "email"]
     assert config.token_expiration_buffer == 60
+    assert config.trust_proxy_headers is False
 
 
 def test_auth_config_auto_configure_disabled():
