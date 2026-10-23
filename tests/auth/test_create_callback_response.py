@@ -11,6 +11,7 @@ class TestWristbandAuthCreateCallbackResponse:
     def setup_method(self) -> None:
         """Set up test fixtures."""
         self.auth_config = AuthConfig(
+            auto_configure_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
@@ -100,6 +101,7 @@ class TestWristbandAuthCreateCallbackResponse:
     async def test_create_callback_response_secure_cookies_disabled(self) -> None:
         """Test response creation with secure cookies disabled."""
         config_insecure = AuthConfig(
+            auto_configure_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,

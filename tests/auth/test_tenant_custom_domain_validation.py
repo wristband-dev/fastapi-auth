@@ -12,6 +12,7 @@ class TestLoginTenantCustomDomainValidation:
 
     def setup_method(self) -> None:
         self.auth_config = AuthConfig(
+            application_authorization_requests_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
@@ -169,6 +170,7 @@ class TestCallbackTenantCustomDomainValidation:
 
     def setup_method(self) -> None:
         self.auth_config = AuthConfig(
+            application_authorization_requests_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
@@ -258,6 +260,7 @@ class TestLogoutTenantCustomDomainValidation:
 
     def setup_method(self) -> None:
         self.auth_config = AuthConfig(
+            auto_configure_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
