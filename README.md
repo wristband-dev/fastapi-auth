@@ -632,11 +632,13 @@ def __init__(self, auth_config: AuthConfig) -> None:
 
 | AuthConfig Field | Type | Required | Auto-Configurable | Description |
 | ---------------- | ---- | -------- | ----------------- | ----------- |
+| application_authorization_requests_enabled | Optional[bool] | No | Yes | Flag indicating whether application-level authorization requests are enabled. Defaults to `False`. When `True`, if `login()` cannot resolve a tenant custom domain or tenant subdomain, the SDK redirects the user directly to the Wristband Authorize Endpoint to complete tenant discovery as part of one continuous authorization flow, rather than redirecting to the Application-Level Login (Tenant Discovery) Page. This has no effect when a tenant can be resolved directly (e.g. via a tenant subdomain, `tenant_name`/`tenant_custom_domain` query parameters, or a bookmarked Tenant-Level Login URL) — that scenario always proceeds with the standard tenant-level flow regardless of this setting. See [Application-Level Authorization Requests](#application-level-authorization-requests). |
 | auto_configure_enabled | bool | No | _N/A_ | Flag that tells the SDK to automatically set some of the SDK configuration values by calling to Wristband's SDK Auto-Configuration Endpoint. Any manually provided configurations will take precedence over the configs returned from the endpoint. Auto-configure is enabled by default. When disabled, if manual configurations are not provided, then an error will be thrown. |
 | client_id | str | Yes | No | The ID of the Wristband client. |
 | client_secret | str | Yes | No | The client's secret. |
-| custom_application_login_page_url | Optional[str] | No | Yes | Custom Application-Level Login Page URL (i.e. Tenant Discovery Page URL). This value only needs to be provided if you are self-hosting the application login page. By default, the SDK will use your Wristband-hosted Application-Level Login page URL. If this value is provided, the SDK will redirect to this URL in certain cases where it cannot resolve a proper Tenant-Level Login URL. |
+| custom_application_login_page_url | Optional[str] | No | Yes | Custom Application-Level Login Page URL (i.e. Tenant Discovery Page URL). This value only needs to be provided if you are self-hosting the application login page. By default, the SDK will use your Wristband-hosted Application-Level Login page URL. If this value is provided, the SDK will redirect to this URL in certain cases where it cannot resolve a proper Tenant-Level Login URL. Has no effect on `login()` or `logout()` when `application_authorization_requests_enabled` is `True`. |
 | dangerously_disable_secure_cookies | bool | No | No | USE WITH CAUTION: If set to `True`, the "Secure" attribute will not be included in any cookie settings. This should only be done when testing in local development environments that don't have HTTPS enabed.  If not provided, this value defaults to `False`. |
+| fallback_login_url | Optional[str] | Only if `application_authorization_requests_enabled` is `True` **and** using tenant subdomains in your application | Yes | A fixed, non-tenant-specific login URL for your application (e.g. `https://yourapp.io/auth/login`). It must not contain the `{tenant_name}` placeholder. When `logout()` cannot resolve a tenant, the SDK redirects here to start a new app-level authorization flow, since a `login_url` containing the `{tenant_name}` placeholder can't be filled in. |
 | is_application_custom_domain_active | Optional[bool] | No | Yes | Indicates whether your Wristband application is configured with an application-level custom domain that is active. This tells the SDK which URL format to use when constructing the Wristband Authorize Endpoint URL. This has no effect on any tenant custom domains passed to your Login Endpoint either via the `tenant_custom_domain` query parameter or via the `default_tenant_custom_domain` config.  Defaults to `False`. |
 | login_state_secret | Optional[str] | No | No | A 32 character (or longer) secret used for encryption and decryption of login state cookies. If not provided, it will default to using the client secret. For enhanced security, it is recommended to provide a value that is unique from the client secret. You can run `python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"` to create a secret from your CLI. |
 | login_url | Optional[str] | Only when `auto_configure_enabled` is set to `False` | Yes | The URL of your application's login endpoint.  This is the endpoint within your application that redirects to Wristband to initialize the login flow. If you intend to use tenant subdomains in your Login Endpoint URL, then this value must contain the `{tenant_name}` placeholder. For example: `https://{tenant_name}.yourapp.com/auth/login`. |
@@ -763,12 +765,65 @@ Wristband supports various tenant domain configurations, including subdomains an
 4. `default_tenant_custom_domain` in LoginConfig: Used if none of the above are present.
 5. `default_tenant_name` in LoginConfig: Used as the final fallback.
 
-If none of these are specified, the SDK redirects users to the Application-Level Login (Tenant Discovery) Page.
+If none of these are specified, what happens next depends on your `application_authorization_requests_enabled` configuration:
+
+- **Disabled (default):** The SDK redirects users to the appropriate Application-Level Login (Tenant Discovery) Page. This is either the Wristband-hosted page (the default), or the `custom_application_login_page_url` if you configured a URL for self-hosting that page.
+- **Enabled:** The SDK redirects users directly to the Wristband Authorize Endpoint using your application's vanity domain, letting Wristband handle tenant discovery as part of the same authorization flow. See [Application-Level Authorization Requests](#application-level-authorization-requests) below.
 
 > [!NOTE]
 > The `tenant_custom_domain` query parameter (#1) is validated against the Wristband tenant custom domain
 > validation API. If the value is not a valid tenant custom domain for your application, it is ignored and
 > skipped over during evaluation, and the SDK continues on to the next entry in the precedence order above.
+
+#### Application-Level Authorization Requests
+
+By default, the SDK constructs a different Wristband Authorize Endpoint URL for every tenant (e.g. `https://tenantA-yourapp-yourcompany.us.wristband.dev/api/v1/oauth2/authorize`, `https://tenantB-yourapp-yourcompany.us.wristband.dev/api/v1/oauth2/authorize`, etc.). Some third-party platforms and SDKs (e.g. Supabase, etc.) require a single, static Authorization Endpoint URL and can't accommodate dynamic, per-tenant URLs.
+
+Enabling `application_authorization_requests_enabled` addresses this by allowing OIDC authorization requests through your application's vanity domain, in addition to tenant vanity domains. This gives one fixed, static Authorization Endpoint URL to hand off to your third-party integration. This setting is configured on your Application in the Wristband Dashboard.
+
+When enabled, this setting only changes behavior in the one case where `login()` cannot resolve a tenant custom domain or tenant name from the request. Instead of redirecting to the Application-Level Login (Tenant Discovery) Page, the SDK sends the user directly to the Wristband Authorize Endpoint using your application's vanity domain, and Wristband handles tenant discovery as part of that same authorization flow.
+
+**Without tenant subdomains**
+
+If your application doesn't use tenant subdomains (i.e., your `login_url` does not contain the `{tenant_name}` placeholder), then no additional configuration is needed beyond setting `application_authorization_requests_enabled` to `True`:
+
+```python
+wristband_auth = WristbandAuth(
+    AuthConfig(
+        wristband_application_vanity_domain="yourapp-yourcompany.us.wristband.dev",
+        client_id="ic6saso5hzdvbnof3bwgccejxy",
+        client_secret="30e9977124b13037d035be10d727806f",
+        login_url="https://yourapp.io/auth/login",
+        redirect_uri="https://yourapp.io/auth/callback",
+        application_authorization_requests_enabled=True,
+    )
+)
+```
+
+**With tenant subdomains**
+
+If your application uses tenant subdomains (i.e., your `login_url` contains the `{tenant_name}` placeholder), you must also provide a `fallback_login_url`. See [logout()](#logout) for why this value is needed:
+
+```python
+wristband_auth = WristbandAuth(
+    AuthConfig(
+        wristband_application_vanity_domain="yourapp-yourcompany.us.wristband.dev",
+        client_id="ic6saso5hzdvbnof3bwgccejxy",
+        client_secret="30e9977124b13037d035be10d727806f",
+        login_url="https://{tenant_name}.yourapp.io/auth/login",
+        redirect_uri="https://{tenant_name}.yourapp.io/auth/callback",
+        parse_tenant_from_root_domain="yourapp.io",
+        application_authorization_requests_enabled=True,
+        fallback_login_url="https://yourapp.io/auth/login",
+    )
+)
+```
+
+In this configuration, the Login State Cookie is scoped to your root domain (e.g. `Domain=.yourapp.io`). The app-level login starts on your root domain, but Wristband redirects back to the tenant's Callback Endpoint (e.g. `https://tenantA.yourapp.io/auth/callback`) after tenant discovery, so the cookie must be readable on every tenant subdomain.
+
+This setting only affects requests where the tenant cannot be resolved. If a tenant subdomain, `tenant_name`/`tenant_custom_domain` query parameter, or a default tenant is present, `login()` proceeds with the standard tenant-level flow, including when a user navigates directly to a Tenant-Level Login URL (e.g. a bookmarked link).
+
+This is especially relevant for [Global and Standalone tenants](https://docs.wristband.dev/docs/tenants-1), which are either excluded from tenant discovery results entirely (Global Tenants) or intended to bypass application-level branding altogether (Standalone Tenants). Users of these tenant types should always reach your Login Endpoint with their tenant already resolvable, so this setting has no bearing on their experience.
 
 #### Tenant Name Query Param
 
@@ -911,6 +966,8 @@ The return URL is stored in the Login State Cookie, and it is available to you i
 ##### Return URL Preservation During Tenant Discovery
 
 When the `login()` method cannot resolve a tenant domain from the request (subdomain, query parameters, or defaults), the SDK redirects users to the Application-Level Login (Tenant Discovery) Page. To ensure a seamless user experience, any provided return URL values are automatically preserved by appending them to the `state` query parameter. This allows the return URL to be propagated back to the Login Endpoint once tenant discovery is complete, ensuring users land at their originally intended destination after authentication.
+
+When `application_authorization_requests_enabled` is `True`, users go to the Wristband Authorize Endpoint instead, and the return URL (along with any custom state) is preserved in the Login State Cookie, just like a tenant-level login.
 
 <br>
 
@@ -1162,7 +1219,12 @@ Wristband supports various tenant domain configurations, including subdomains an
 4. Tenant subdomain in the URL: Used if none of the above are present, and `parse_tenant_from_root_domain` is specified, and the subdomain is present in the host.
 5. `tenant_name` query parameter: Used as the final fallback.
 
-If none of these are specified, the SDK redirects users to the Application-Level Login (Tenant Discovery) Page.
+If none of these are specified, the SDK checks whether a `redirect_url` was provided in `LogoutConfig`. If so, it is returned immediately as the destination, with no Wristband Logout Endpoint URL constructed.
+
+When `redirect_url` is not provided, what happens next depends on your `application_authorization_requests_enabled` configuration:
+
+- **Disabled (default):** The SDK redirects users to the Application-Level Login (Tenant Discovery) Page. This is either the Wristband-hosted page (the default), or the `custom_application_login_page_url` if you configured a URL for self-hosting that page.
+- **Enabled:** The SDK redirects users back to your application's own Login Endpoint instead to start a new app-level authorization flow. The exact location will be either the `fallback_login_url` if `login_url` contains the `{tenant_name}` placeholder, or it will be the `login_url` otherwise.
 
 > [!NOTE]
 > The `tenant_custom_domain` query parameter (#3) is validated against the Wristband tenant custom domain

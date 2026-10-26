@@ -7,8 +7,8 @@ from .exceptions import WristbandError
 from .models import AuthConfig, SdkConfiguration
 
 _default_scopes = ["openid", "offline_access", "email"]
-_tenant_placeholder_pattern = re.compile(r"\{tenant_(?:domain|name)\}")
-_tenant_placeholder_msg = '"{tenant_name}" or "{tenant_domain}" placeholder'
+_tenant_placeholder_pattern = re.compile(r"\{tenant_name\}")
+_tenant_placeholder_msg = '"{tenant_name}" placeholder'
 
 
 class ConfigResolver:
@@ -125,6 +125,21 @@ class ConfigResolver:
                     "[parse_tenant_from_root_domain] is absent."
                 )
 
+        if (
+            self.auth_config.application_authorization_requests_enabled
+            and _tenant_placeholder_pattern.search(self.auth_config.login_url)
+            and (not self.auth_config.fallback_login_url or not self.auth_config.fallback_login_url.strip())
+        ):
+            raise TypeError(
+                "The [fallback_login_url] config must have a value when auto-configure is disabled, "
+                "[application_authorization_requests_enabled] is True, and [login_url] contains the "
+                f"{_tenant_placeholder_msg}."
+            )
+        if self.auth_config.fallback_login_url and _tenant_placeholder_pattern.search(
+            self.auth_config.fallback_login_url
+        ):
+            raise TypeError(f"The [fallback_login_url] cannot contain the {_tenant_placeholder_msg}.")
+
     def _validate_partial_url_auth_configs(self) -> None:
         """Validate manually provided URL configuration when auto-configure is enabled."""
         if self.auth_config.login_url:
@@ -159,6 +174,11 @@ class ConfigResolver:
                     "[parse_tenant_from_root_domain] is absent."
                 )
 
+        if self.auth_config.fallback_login_url and _tenant_placeholder_pattern.search(
+            self.auth_config.fallback_login_url
+        ):
+            raise TypeError(f"The [fallback_login_url] cannot contain the {_tenant_placeholder_msg}.")
+
     def _validate_all_dynamic_configs(self, sdk_configuration: SdkConfiguration) -> None:
         """Validate all dynamic configurations after SDK config is loaded."""
 
@@ -168,6 +188,13 @@ class ConfigResolver:
         parse_tenant_from_root_domain = (
             self.auth_config.parse_tenant_from_root_domain or sdk_configuration.login_url_tenant_domain_suffix or ""
         )
+        # A manual False must win over an auto-configured True, so this can't use "or" like the others.
+        application_authorization_requests_enabled = (
+            self.auth_config.application_authorization_requests_enabled
+            if self.auth_config.application_authorization_requests_enabled is not None
+            else sdk_configuration.application_authorization_requests_enabled
+        )
+        fallback_login_url = self.auth_config.fallback_login_url or sdk_configuration.fallback_login_url or ""
 
         # Validate that required fields are present in the SDK config response
         if not login_url:
@@ -179,7 +206,7 @@ class ConfigResolver:
                 "or ensure your Wristband OAuth2 Client has a single redirect URI configured.",
             )
 
-        # Validate the tenant domain token logic with final resolved values
+        # Validate the tenant name token logic with final resolved values
         if parse_tenant_from_root_domain:
             if not _tenant_placeholder_pattern.search(login_url):
                 raise WristbandError(
@@ -206,6 +233,26 @@ class ConfigResolver:
                     f"The resolved [redirect_uri] cannot contain the {_tenant_placeholder_msg} when "
                     "[parse_tenant_from_root_domain] is absent.",
                 )
+
+        # Validate fallback_login_url against the fully resolved values, since any of login_url,
+        # application_authorization_requests_enabled, and fallback_login_url may independently come
+        # from either the manual config or the SDK Auto-Configuration Endpoint.
+        if (
+            application_authorization_requests_enabled
+            and _tenant_placeholder_pattern.search(login_url)
+            and not fallback_login_url
+        ):
+            raise WristbandError(
+                "config_validation_error",
+                "The resolved [fallback_login_url] must have a value when "
+                "[application_authorization_requests_enabled] is True and the resolved [login_url] contains the "
+                f"{_tenant_placeholder_msg}.",
+            )
+        if fallback_login_url and _tenant_placeholder_pattern.search(fallback_login_url):
+            raise WristbandError(
+                "config_validation_error",
+                f"The resolved [fallback_login_url] cannot contain the {_tenant_placeholder_msg}.",
+            )
 
     # ////////////////////////////////////
     #  STATIC CONFIGURATIONS
@@ -242,6 +289,10 @@ class ConfigResolver:
     def get_token_expiration_buffer(self) -> int:
         """Get the token expiration buffer in seconds."""
         return self.auth_config.token_expiration_buffer
+
+    def get_trust_proxy_headers(self) -> bool:
+        """Get whether to trust the X-Forwarded-Host header when determining the request host."""
+        return self.auth_config.trust_proxy_headers
 
     # ////////////////////////////////////
     #  DYNAMIC CONFIGURATIONS
@@ -316,3 +367,31 @@ class ConfigResolver:
 
         # 3. This should not happen if validation is done properly
         raise TypeError("The [redirect_uri] config must have a value")
+
+    async def get_application_authorization_requests_enabled(self) -> bool:
+        """Get whether application authorization requests toggle is active."""
+        # 1. Check if manually provided in authConfig
+        if self.auth_config.application_authorization_requests_enabled is not None:
+            return self.auth_config.application_authorization_requests_enabled
+
+        # 2. If auto-configure is enabled, get from SDK config
+        if self.get_auto_configure_enabled():
+            sdk_config = await self._load_sdk_config()
+            return sdk_config.application_authorization_requests_enabled
+
+        # 3. Default fallback
+        return False
+
+    async def get_fallback_login_url(self) -> str:
+        """Get fallback login url."""
+        # 1. Check if manually provided in authConfig
+        if self.auth_config.fallback_login_url:
+            return self.auth_config.fallback_login_url
+
+        # 2. If auto-configure is enabled, get from SDK config
+        if self.get_auto_configure_enabled():
+            sdk_config = await self._load_sdk_config()
+            return sdk_config.fallback_login_url or ""
+
+        # 3. Default fallback
+        return ""
