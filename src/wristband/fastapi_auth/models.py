@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import Annotated, Any, Dict, Iterator, List, Optional, Protocol, TypedDict, Union
 
+from fastapi import Response
 from pydantic import BaseModel, ConfigDict, Field
 from wristband.python_jwt import JWTPayload
 
@@ -511,21 +512,30 @@ class TokenData(BaseModel):
 class CompletedCallbackResult(BaseModel):
     """Callback successfully completed with data for creating a session."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     type: CallbackResultType = Field(CallbackResultType.COMPLETED, frozen=True)
     """Discriminator field indicating successful completion."""
     callback_data: CallbackData
     """Data returned from successful callback processing, used to create user session."""
+    response: Response
+    """
+    The redirect response to the URL returned by the application's redirect URL resolver,
+    with the login state cookie already cleared.
+    """
 
 
 class RedirectRequiredCallbackResult(BaseModel):
     """Redirect is required, generally to a login route or page."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     type: CallbackResultType = Field(CallbackResultType.REDIRECT_REQUIRED, frozen=True)
     """Discriminator field indicating redirect is required."""
-    redirect_url: str
-    """URL to redirect the user to retry authentication."""
     reason: CallbackFailureReason
     """Specific reason why the callback failed and requires redirect."""
+    response: Response
+    """The redirect response to the Login Endpoint, with the login state cookie already cleared."""
 
 
 CallbackResult = Annotated[Union[CompletedCallbackResult, RedirectRequiredCallbackResult], Field(discriminator="type")]
@@ -534,7 +544,9 @@ Union type representing the result of OAuth callback processing.
 
 The discriminator field 'type' is used to determine which variant:
 - CallbackResultType.COMPLETED: Callback succeeded, contains callback_data
-- CallbackResultType.REDIRECT_REQUIRED: Callback failed, contains redirect_url and reason
+- CallbackResultType.REDIRECT_REQUIRED: Callback failed, contains reason
+
+Both variants always contain a redirect response with the login state cookie already cleared.
 """
 
 

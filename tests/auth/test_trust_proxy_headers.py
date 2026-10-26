@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import Request
 
-from tests.utilities import TEST_LOGIN_STATE_SECRET, create_mock_request
+from tests.utilities import TEST_LOGIN_STATE_SECRET, create_mock_request, resolve_test_redirect_url
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.models import (
     AuthConfig,
@@ -195,7 +195,7 @@ class TestTrustProxyHeadersAuthFlows:
             mock_get_tokens.return_value = mock_token_response
             mock_get_userinfo.return_value = mock_user_info
 
-            result = await wristband_auth.callback(request)
+            result = await wristband_auth.callback(request, resolve_test_redirect_url)
 
         assert isinstance(result, CompletedCallbackResult)
         assert result.type == CallbackResultType.COMPLETED
@@ -207,10 +207,10 @@ class TestTrustProxyHeadersAuthFlows:
         """Test callback() builds the tenant login URL from the forwarded tenant."""
         request = self._proxied_request("/auth/callback", query_params={"state": "test_state"})
 
-        result = await _subdomain_auth(trust_proxy_headers=True).callback(request)
+        result = await _subdomain_auth(trust_proxy_headers=True).callback(request, resolve_test_redirect_url)
 
         assert isinstance(result, RedirectRequiredCallbackResult)
-        assert result.redirect_url == f"https://acme.{ROOT_DOMAIN}/auth/login"
+        assert result.response.headers["location"] == f"https://acme.{ROOT_DOMAIN}/auth/login"
 
     @pytest.mark.asyncio
     async def test_logout_uses_tenant_subdomain_from_x_forwarded_host(self) -> None:

@@ -2,6 +2,7 @@ from typing import get_type_hints
 from unittest.mock import Mock
 
 import pytest
+from fastapi.responses import RedirectResponse
 from pydantic import ValidationError
 from wristband.python_jwt import JWTPayload
 
@@ -779,23 +780,26 @@ def test_callback_result_completed():
         tenant_custom_domain=None,
     )
 
-    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data)
+    response = RedirectResponse("https://example.com/home", status_code=302)
+    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data, response=response)
 
     assert result.callback_data == callback_data
     assert result.type == CallbackResultType.COMPLETED
+    assert result.response is response
 
 
 def test_callback_result_redirect_required():
     """Test CallbackResult with REDIRECT_REQUIRED type."""
+    response = RedirectResponse("https://example.com/login", status_code=302)
     result = RedirectRequiredCallbackResult(
         type=CallbackResultType.REDIRECT_REQUIRED,
-        redirect_url="https://example.com/login",
         reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+        response=response,
     )
 
     assert result.type == CallbackResultType.REDIRECT_REQUIRED
-    assert result.redirect_url == "https://example.com/login"
     assert result.reason == CallbackFailureReason.MISSING_LOGIN_STATE
+    assert result.response is response
 
 
 def test_completed_callback_result_type_frozen():
@@ -819,7 +823,11 @@ def test_completed_callback_result_type_frozen():
         tenant_custom_domain=None,
     )
 
-    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data)
+    result = CompletedCallbackResult(
+        type=CallbackResultType.COMPLETED,
+        callback_data=callback_data,
+        response=RedirectResponse("https://example.com/home", status_code=302),
+    )
 
     # Verify type is set correctly
     assert result.type == CallbackResultType.COMPLETED
@@ -833,8 +841,8 @@ def test_redirect_required_callback_result_type_frozen():
     """Test that RedirectRequiredCallbackResult.type field is frozen and cannot be modified."""
     result = RedirectRequiredCallbackResult(
         type=CallbackResultType.REDIRECT_REQUIRED,
-        redirect_url="https://example.com/login",
         reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+        response=RedirectResponse("https://example.com/login", status_code=302),
     )
 
     # Verify type is set correctly
@@ -843,6 +851,15 @@ def test_redirect_required_callback_result_type_frozen():
     # Attempt to modify frozen field should raise ValidationError
     with pytest.raises(ValidationError):
         result.type = CallbackResultType.COMPLETED  # type: ignore
+
+
+def test_redirect_required_callback_result_requires_response():
+    """Test RedirectRequiredCallbackResult cannot be created without a response."""
+    with pytest.raises(ValidationError):
+        RedirectRequiredCallbackResult(  # type: ignore[call-arg]
+            type=CallbackResultType.REDIRECT_REQUIRED,
+            reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+        )
 
 
 def test_redirect_required_callback_result_all_reasons():
@@ -857,13 +874,13 @@ def test_redirect_required_callback_result_all_reasons():
     for reason in reasons:
         result = RedirectRequiredCallbackResult(
             type=CallbackResultType.REDIRECT_REQUIRED,
-            redirect_url="https://example.com/login",
             reason=reason,
+            response=RedirectResponse("https://example.com/login", status_code=302),
         )
 
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
         assert result.reason == reason
-        assert result.redirect_url == "https://example.com/login"
+        assert result.response.headers["location"] == "https://example.com/login"
 
 
 def test_wristband_token_response_creation():

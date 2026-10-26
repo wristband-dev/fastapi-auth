@@ -1,11 +1,12 @@
 import base64
 import hashlib
+import inspect
 import logging
 import re
 import secrets
 import time
 from datetime import datetime
-from typing import Any, Awaitable, Callable, List, Literal, Optional, Tuple, cast
+from typing import Any, Awaitable, Callable, List, Literal, Optional, Tuple, Union, cast
 from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -213,7 +214,11 @@ class WristbandAuth:
     #  CALLBACK
     #################################
 
-    async def callback(self, request: Request) -> CallbackResult:
+    async def callback(
+        self,
+        request: Request,
+        resolve_redirect_url: Callable[[Request, CallbackData], Union[str, Awaitable[str]]],
+    ) -> CallbackResult:
         """
         Handles the OAuth2 callback from Wristband. Exchanges the authorization code for tokens
         and retrieves user information for the authenticated user.
@@ -228,18 +233,51 @@ class WristbandAuth:
         - tenant_name: The tenant's name. Used when redirecting to the Login Endpoint in setups
           that don't rely on tenant subdomains or custom domains.
 
+        The result always contains a ready-made redirect response with the login state cookie already cleared:
+        - When the callback completes, the response redirects to the URL returned by resolve_redirect_url.
+        - When a redirect is required, resolve_redirect_url is not called, and the response redirects to your
+          Login Endpoint.
+
         Args:
             request (Request): The FastAPI request object containing the callback query parameters.
+            resolve_redirect_url (Callable): A function that receives the request and the callback data, and
+                returns the URL to send the user to after a successful login. The URL can be absolute or a relative
+                path (e.g. "/home"). It can be a regular function or an async function.
 
         Returns:
-            CallbackResult: An object representing the outcome of the callback process,
-            including login state, user info, or redirect behavior.
+            CallbackResult: The callback result. It always contains a redirect response with the login state
+            cookie already cleared. A CompletedCallbackResult also contains the callback_data needed to create
+            a session. A RedirectRequiredCallbackResult also contains the reason the redirect is required.
+
+        Raises:
+            TypeError: If resolve_redirect_url is not a function, or if it doesn't return a non-empty URL.
+            WristbandError: If an error occurs during the callback handling.
+
+        Example:
+            ```python
+            @router.get("/callback")
+            async def callback(request: Request, session: Session = Depends(get_session)) -> Response:
+                callback_result = await wristband_auth.callback(
+                    request, lambda req, data: data.return_url or "<your_app_home_url>"
+                )
+
+                if isinstance(callback_result, RedirectRequiredCallbackResult):
+                    return callback_result.response
+
+                session.from_callback(callback_result.callback_data)
+                return callback_result.response
+            ```
         """
+
+        # The redirect URL resolver is required to build the completed callback response.
+        if not callable(resolve_redirect_url):
+            raise TypeError("resolve_redirect_url must be a function")
 
         # Fetch our SDK configs
         application_authorization_requests_enabled = (
             await self._config_resolver.get_application_authorization_requests_enabled()
         )
+        dangerously_disable_secure_cookies = self._config_resolver.get_dangerously_disable_secure_cookies()
         login_url = await self._config_resolver.get_login_url()
         parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
         token_expiration_buffer = self._config_resolver.get_token_expiration_buffer()
@@ -288,35 +326,37 @@ class WristbandAuth:
             connector: Literal["&", "?"] = "&" if "?" in tenant_login_url else "?"
             tenant_login_url = f"{tenant_login_url}{connector}tenant_custom_domain={tenant_custom_domain_param}"
 
-        # Retrieve and decrypt the login state cookie
-        _, login_state_cookie_val = self._get_login_state_cookie(request)
+        # The login state cookie is cleared on every redirect response, if it exists.
+        login_state_cookie_name, login_state_cookie_val = self._get_login_state_cookie(request)
+
+        # Clear with the same Domain that login() set the cookie with, otherwise the browser won't delete it.
+        cookie_domain: Optional[str] = self._resolve_login_state_cookie_domain(
+            application_authorization_requests_enabled, parse_tenant_from_root_domain
+        )
+
+        def redirect_required(reason: CallbackFailureReason) -> RedirectRequiredCallbackResult:
+            return RedirectRequiredCallbackResult(
+                type=CallbackResultType.REDIRECT_REQUIRED,
+                reason=reason,
+                response=self._create_callback_redirect_response(
+                    tenant_login_url, login_state_cookie_name, dangerously_disable_secure_cookies, cookie_domain
+                ),
+            )
 
         # No valid cookie, we cannot verify the request
         if not login_state_cookie_val:
-            return RedirectRequiredCallbackResult(
-                type=CallbackResultType.REDIRECT_REQUIRED,
-                redirect_url=tenant_login_url,
-                reason=CallbackFailureReason.MISSING_LOGIN_STATE,
-            )
+            return redirect_required(CallbackFailureReason.MISSING_LOGIN_STATE)
 
         login_state: LoginState = self._decrypt_login_state(login_state_cookie_val)
 
         # Validate the state from the cookie matches the incoming state param
         if param_state != login_state.state:
-            return RedirectRequiredCallbackResult(
-                type=CallbackResultType.REDIRECT_REQUIRED,
-                redirect_url=tenant_login_url,
-                reason=CallbackFailureReason.INVALID_LOGIN_STATE,
-            )
+            return redirect_required(CallbackFailureReason.INVALID_LOGIN_STATE)
 
         if error:
             # If we specifically got a 'login_required' error, go back to the login
             if error.lower() == "login_required":
-                return RedirectRequiredCallbackResult(
-                    type=CallbackResultType.REDIRECT_REQUIRED,
-                    redirect_url=tenant_login_url,
-                    reason=CallbackFailureReason.LOGIN_REQUIRED,
-                )
+                return redirect_required(CallbackFailureReason.LOGIN_REQUIRED)
             # Otherwise raise an exception
             raise WristbandError(error, error_description or "")
 
@@ -333,89 +373,50 @@ class WristbandAuth:
 
             # Call Wristband Userinfo API
             userinfo: UserInfo = await self._wristband_api.get_userinfo(token_response.access_token)
-
-            # Calculate token expiration buffer
-            expires_in = token_response.expires_in - token_expiration_buffer
-            expires_at = int((time.time() + expires_in) * 1000)
-
-            # Prevent open redirects by validating the return_url against allowed hosts.
-            validated_return_url: Optional[str] = self._validate_return_url(
-                request,
-                login_state.return_url,
-                resolved_tenant_name,
-                application_authorization_requests_enabled,
-                trust_proxy_headers,
-                parse_tenant_from_root_domain,
-            )
-
-            # Return the callback data and result
-            return CompletedCallbackResult(
-                type=CallbackResultType.COMPLETED,
-                callback_data=CallbackData(
-                    access_token=token_response.access_token,
-                    id_token=token_response.id_token,
-                    expires_at=expires_at,
-                    expires_in=expires_in,
-                    tenant_name=resolved_tenant_name,
-                    user_info=userinfo,
-                    custom_state=login_state.custom_state,
-                    refresh_token=token_response.refresh_token,
-                    return_url=validated_return_url,
-                    tenant_custom_domain=tenant_custom_domain_param or None,
-                ),
-            )
         except InvalidGrantError:
-            return RedirectRequiredCallbackResult(
-                type=CallbackResultType.REDIRECT_REQUIRED,
-                redirect_url=tenant_login_url,
-                reason=CallbackFailureReason.INVALID_GRANT,
-            )
-        except Exception as ex:
-            raise ex
+            return redirect_required(CallbackFailureReason.INVALID_GRANT)
 
-    #################################
-    #  CREATE CALLBACK RESPONSE
-    #################################
+        # Calculate token expiration buffer
+        expires_in = token_response.expires_in - token_expiration_buffer
+        expires_at = int((time.time() + expires_in) * 1000)
 
-    async def create_callback_response(self, request: Request, redirect_url: str) -> Response:
-        """
-        Constructs the redirect response to your application and cleans up the login state.
-
-        Args:
-            request (Request): The FastAPI request object.
-            redirect_url (str): The location for your application that you want to send users to.
-
-        Returns:
-            Response: The FastAPI Response that is performing the URL redirect to your desired application URL.
-        """
-
-        # Fetch our SDK configs
-        application_authorization_requests_enabled = (
-            await self._config_resolver.get_application_authorization_requests_enabled()
+        # Prevent open redirects by validating the return_url against allowed hosts.
+        validated_return_url: Optional[str] = self._validate_return_url(
+            request,
+            login_state.return_url,
+            resolved_tenant_name,
+            application_authorization_requests_enabled,
+            trust_proxy_headers,
+            parse_tenant_from_root_domain,
         )
-        dangerously_disable_secure_cookies = self._config_resolver.get_dangerously_disable_secure_cookies()
-        parse_tenant_from_root_domain = await self._config_resolver.get_parse_tenant_from_root_domain()
 
-        if not redirect_url or not redirect_url.strip():
-            raise TypeError("redirect_url cannot be null or empty")
+        callback_data = CallbackData(
+            access_token=token_response.access_token,
+            id_token=token_response.id_token,
+            expires_at=expires_at,
+            expires_in=expires_in,
+            tenant_name=resolved_tenant_name,
+            user_info=userinfo,
+            custom_state=login_state.custom_state,
+            refresh_token=token_response.refresh_token,
+            return_url=validated_return_url,
+            tenant_custom_domain=tenant_custom_domain_param or None,
+        )
 
-        redirect_response = RedirectResponse(redirect_url, status_code=302)
-        redirect_response.headers["Cache-Control"] = "no-store"
-        redirect_response.headers["Pragma"] = "no-cache"
+        # Let the application decide where to send the user after a successful login.
+        redirect_url = resolve_redirect_url(request, callback_data)
+        if inspect.isawaitable(redirect_url):
+            redirect_url = await redirect_url
+        if not isinstance(redirect_url, str) or not redirect_url.strip():
+            raise TypeError("resolve_redirect_url must return a non-empty URL")
 
-        login_state_cookie_name, _ = self._get_login_state_cookie(request)
-        if login_state_cookie_name:
-            # Clear with the same Domain that login() set the cookie with, otherwise the browser won't delete it.
-            self._clear_login_state_cookie(
-                res=redirect_response,
-                cookie_name=login_state_cookie_name,
-                dangerously_disable_secure_cookies=dangerously_disable_secure_cookies,
-                domain=self._resolve_login_state_cookie_domain(
-                    application_authorization_requests_enabled, parse_tenant_from_root_domain
-                ),
-            )
-
-        return redirect_response
+        return CompletedCallbackResult(
+            type=CallbackResultType.COMPLETED,
+            callback_data=callback_data,
+            response=self._create_callback_redirect_response(
+                redirect_url, login_state_cookie_name, dangerously_disable_secure_cookies, cookie_domain
+            ),
+        )
 
     #################################
     #  LOGOUT
@@ -1047,6 +1048,31 @@ class WristbandAuth:
             secure=not dangerously_disable_secure_cookies,
             domain=domain,
         )
+
+    def _create_callback_redirect_response(
+        self,
+        redirect_url: str,
+        login_state_cookie_name: Optional[str],
+        dangerously_disable_secure_cookies: bool,
+        domain: Optional[str] = None,
+    ) -> Response:
+        """
+        Creates the auth callback's redirect response and clears the login state cookie on it, if the
+        cookie exists.
+        """
+        redirect_response = RedirectResponse(redirect_url, status_code=302)
+        redirect_response.headers["Cache-Control"] = "no-store"
+        redirect_response.headers["Pragma"] = "no-cache"
+
+        if login_state_cookie_name:
+            self._clear_login_state_cookie(
+                res=redirect_response,
+                cookie_name=login_state_cookie_name,
+                dangerously_disable_secure_cookies=dangerously_disable_secure_cookies,
+                domain=domain,
+            )
+
+        return redirect_response
 
     def _generate_random_string(self, length: int = 32) -> str:
         random_bytes = secrets.token_bytes(length)

@@ -2,7 +2,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tests.utilities import TEST_LOGIN_STATE_SECRET, assert_redirect_no_cache, create_mock_request
+from tests.utilities import (
+    TEST_LOGIN_STATE_SECRET,
+    assert_redirect_no_cache,
+    create_mock_request,
+    resolve_test_redirect_url,
+)
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.models import AuthConfig, LogoutConfig, RedirectRequiredCallbackResult
 
@@ -209,12 +214,12 @@ class TestCallbackTenantCustomDomainValidation:
             mock_login_url.return_value = "https://auth.example.com/login"
             mock_parse_tenant.return_value = ""
 
-            result = await self.wristband_auth.callback(request)
+            result = await self.wristband_auth.callback(request, resolve_test_redirect_url)
 
         mock_validate.assert_called_once_with("tenant.custom.com")
         assert isinstance(result, RedirectRequiredCallbackResult)
         assert (
-            result.redirect_url
+            result.response.headers["location"]
             == "https://auth.example.com/login?tenant_name=tenant1&tenant_custom_domain=tenant.custom.com"
         )
 
@@ -247,12 +252,12 @@ class TestCallbackTenantCustomDomainValidation:
             mock_login_url.return_value = "https://auth.example.com/login"
             mock_parse_tenant.return_value = ""
 
-            result = await self.wristband_auth.callback(request)
+            result = await self.wristband_auth.callback(request, resolve_test_redirect_url)
 
         mock_validate.assert_called_once_with("bogus.custom.com")
         assert isinstance(result, RedirectRequiredCallbackResult)
         # No tenant_custom_domain query param appended since it was invalid.
-        assert result.redirect_url == "https://auth.example.com/login?tenant_name=tenant1"
+        assert result.response.headers["location"] == "https://auth.example.com/login?tenant_name=tenant1"
 
 
 class TestLogoutTenantCustomDomainValidation:

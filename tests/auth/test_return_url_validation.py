@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import Request
 
-from tests.utilities import TEST_LOGIN_STATE_SECRET, create_mock_request
+from tests.utilities import TEST_LOGIN_STATE_SECRET, create_mock_request, resolve_test_redirect_url
 from wristband.fastapi_auth.auth import WristbandAuth
 from wristband.fastapi_auth.exceptions import WristbandError
 from wristband.fastapi_auth.models import (
@@ -574,7 +574,7 @@ class TestCallbackReturnUrlValidation:
             mock_get_tokens.return_value = mock_token_response
             mock_get_userinfo.return_value = mock_user_info
 
-            result = await wristband_auth.callback(request)
+            result = await wristband_auth.callback(request, resolve_test_redirect_url)
 
         assert isinstance(result, CompletedCallbackResult)
         assert result.type == CallbackResultType.COMPLETED
