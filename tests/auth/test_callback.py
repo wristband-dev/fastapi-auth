@@ -90,7 +90,6 @@ class TestWristbandAuthCallback:
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             application_authorization_requests_enabled=False,
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -683,7 +682,6 @@ class TestWristbandAuthCallback:
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             application_authorization_requests_enabled=False,
-            parse_tenant_from_root_domain="auth.example.com",
             token_expiration_buffer=60,
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
@@ -794,7 +792,6 @@ class TestWristbandAuthCallback:
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
             application_authorization_requests_enabled=False,
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 

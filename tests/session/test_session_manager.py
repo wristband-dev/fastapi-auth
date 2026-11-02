@@ -992,6 +992,79 @@ class TestPersist:
             mock_write.assert_not_called()
 
 
+class TestPersistNoCacheHeaders:
+    """Test _persist writes no-cache headers whenever it writes or deletes session cookies"""
+
+    def test_save_writes_no_cache_headers(self, session, response):
+        """Test a pending save() writes the no-cache headers"""
+        session["user_id"] = "test"
+        session.save()
+
+        session._persist(response)
+
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+
+    def test_save_with_csrf_writes_no_cache_headers(self, session, response):
+        """Test a pending save() that also writes the CSRF cookie writes the no-cache headers"""
+        session["user_id"] = "test"
+        session["csrf_token"] = "csrf_token_123"
+        session.save()
+
+        session._persist(response)
+
+        assert len(response.headers.getlist("set-cookie")) == 2
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+
+    def test_clear_writes_no_cache_headers(self, session, response):
+        """Test a pending clear() writes the no-cache headers"""
+        session["user_id"] = "test"
+        session.clear()
+
+        session._persist(response)
+
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+
+    def test_no_headers_when_nothing_pending(self, session, response):
+        """Test nothing is written when neither save() nor clear() is pending"""
+        session["user_id"] = "test"
+
+        session._persist(response)
+
+        assert "cache-control" not in response.headers
+        assert "pragma" not in response.headers
+        assert "set-cookie" not in response.headers
+
+    def test_replaces_existing_cache_headers(self, session):
+        """Test existing Cache-Control and Pragma values are replaced, not appended to"""
+        response = Response(headers={"Cache-Control": "public, max-age=300", "Pragma": "cache"})
+        session["user_id"] = "test"
+        session.save()
+
+        session._persist(response)
+
+        assert response.headers.getlist("cache-control") == ["no-store"]
+        assert response.headers.getlist("pragma") == ["no-cache"]
+
+    def test_leaves_existing_cache_headers_when_nothing_pending(self, session):
+        """Test the route's own caching headers are left alone when no session cookies are written"""
+        response = Response(headers={"Cache-Control": "public, max-age=300"})
+
+        session._persist(response)
+
+        assert response.headers.getlist("cache-control") == ["public, max-age=300"]
+
+    def test_write_no_cache_headers_does_not_duplicate(self, session, response):
+        """Test writing the no-cache headers more than once doesn't create duplicates"""
+        session._write_no_cache_headers(response)
+        session._write_no_cache_headers(response)
+
+        assert response.headers.getlist("cache-control") == ["no-store"]
+        assert response.headers.getlist("pragma") == ["no-cache"]
+
+
 class TestWriteCookies:
     """Test internal _write_cookies method"""
 

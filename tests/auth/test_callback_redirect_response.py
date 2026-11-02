@@ -71,8 +71,6 @@ def _subdomain_auth(**overrides: Any) -> WristbandAuth:
         "auto_configure_enabled": False,
         "login_url": "https://{tenant_name}." + ROOT_DOMAIN + "/auth/login",
         "redirect_uri": "https://{tenant_name}." + ROOT_DOMAIN + "/auth/callback",
-        "parse_tenant_from_root_domain": ROOT_DOMAIN,
-        "fallback_login_url": f"https://{ROOT_DOMAIN}/auth/login",
         "application_authorization_requests_enabled": True,
     }
     values.update(overrides)

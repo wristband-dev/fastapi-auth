@@ -31,7 +31,6 @@ def _subdomain_auth(trust_proxy_headers: bool) -> WristbandAuth:
             auto_configure_enabled=False,
             login_url=f"https://{{tenant_name}}.{ROOT_DOMAIN}/auth/login",
             redirect_uri=f"https://{{tenant_name}}.{ROOT_DOMAIN}/auth/callback",
-            parse_tenant_from_root_domain=ROOT_DOMAIN,
             trust_proxy_headers=trust_proxy_headers,
         )
     )

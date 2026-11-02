@@ -419,7 +419,6 @@ class TestWristbandAuthLogin:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="custom.com",
             scopes=["openid", "email"],
         )
         temp_wristband_auth = WristbandAuth(temp_config)
@@ -1291,7 +1290,6 @@ class TestWristbandAuthBuildTenantLoginUrl:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1354,7 +1352,6 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1415,7 +1412,6 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1434,7 +1430,6 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1453,7 +1448,6 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1472,7 +1466,6 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1491,7 +1484,6 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 
@@ -1510,7 +1502,6 @@ class TestWristbandAuthResolveTenantMethods:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
 

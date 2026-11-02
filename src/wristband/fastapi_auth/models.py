@@ -30,24 +30,21 @@ class AuthConfig(BaseModel):
             cookies. If not provided, it will default to using the client secret. For enhanced security, it is
             recommended to provide a value that is unique from the client secret.
         login_url: The URL for initiating the login request. This field is auto-configurable. Required when
-            auto-configure is disabled.
+            auto-configure is disabled. If using tenant subdomains, this value must contain the {tenant_name}
+            placeholder once, as the leftmost part of its hostname (e.g. https://{tenant_name}.yourapp.io/auth/login).
+            The root domain for parsing tenant subdomains (e.g. yourapp.io) and the fallback login URL used when the
+            tenant can't be resolved (e.g. https://yourapp.io/auth/login) are both derived from it.
         redirect_uri: The redirect URI for callback after authentication. This field is auto-configurable. Required
-            when auto-configure is disabled.
+            when auto-configure is disabled. If using tenant subdomains, this value must contain the {tenant_name}
+            placeholder once, as the leftmost part of its hostname.
         wristband_application_vanity_domain: The vanity domain of the Wristband application.
         custom_application_login_page_url: Custom application login (tenant discovery) page URL if you are
             self-hosting the application login/tenant discovery UI. This field is auto-configurable.
         dangerously_disable_secure_cookies: If set to True, the "Secure" attribute will not be
             included in any cookie settings. This should only be done when testing in local
             development (if necessary).
-        fallback_login_url: Fallback login URL to redirect to in the event the tenant placeholder in your
-            login_url cannot be resolved (e.g. https://yourapp.io/auth/login). Only applicable when
-            application_authorization_requests_enabled is True. Must not contain the tenant placeholder.
-            This field is auto-configurable.
         is_application_custom_domain_active: Indicates whether an application-level custom domain
             is active in your Wristband application. This field is auto-configurable.
-        parse_tenant_from_root_domain: The root domain for your application from which to parse
-            out the tenant name. Indicates whether tenant subdomains are used for authentication.
-            This field is auto-configurable.
         scopes: The scopes required for authentication.
         token_expiration_buffer: Buffer time (in seconds) to subtract from the access token’s expiration time.
             This causes the token to be treated as expired before its actual expiration, helping to avoid token
@@ -68,11 +65,9 @@ class AuthConfig(BaseModel):
     auto_configure_enabled: bool = True
     custom_application_login_page_url: Optional[str] = None
     dangerously_disable_secure_cookies: bool = False
-    fallback_login_url: Optional[str] = None
     is_application_custom_domain_active: Optional[bool] = None
     login_state_secret: Optional[str] = None
     login_url: Optional[str] = None
-    parse_tenant_from_root_domain: Optional[str] = None
     redirect_uri: Optional[str] = None
     scopes: List[str] = Field(default=["openid", "offline_access", "email"])
     token_expiration_buffer: int = 60

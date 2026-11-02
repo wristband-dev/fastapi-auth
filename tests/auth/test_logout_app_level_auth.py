@@ -11,7 +11,8 @@ from wristband.fastapi_auth.models import AuthConfig, LogoutConfig
 
 VANITY_DOMAIN = "app.wristband.dev"
 ROOT_DOMAIN = "yourapp.io"
-FALLBACK_LOGIN_URL = "https://fallback.yourapp.io/auth/login"
+# Derived from login_url by removing the "{tenant_name}." placeholder.
+FALLBACK_LOGIN_URL = f"https://{ROOT_DOMAIN}/auth/login"
 
 
 def _subdomain_auth(**overrides: Any) -> WristbandAuth:
@@ -24,8 +25,6 @@ def _subdomain_auth(**overrides: Any) -> WristbandAuth:
         "auto_configure_enabled": False,
         "login_url": f"https://{{tenant_name}}.{ROOT_DOMAIN}/auth/login",
         "redirect_uri": f"https://{{tenant_name}}.{ROOT_DOMAIN}/auth/callback",
-        "parse_tenant_from_root_domain": ROOT_DOMAIN,
-        "fallback_login_url": FALLBACK_LOGIN_URL,
         "application_authorization_requests_enabled": True,
     }
     values.update(overrides)

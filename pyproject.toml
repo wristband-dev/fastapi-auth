@@ -11,7 +11,7 @@ license = "MIT"
 authors = [
     {name = "Wristband", email = "support@wristband.dev"},
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "cryptography>=46.0.6",
     "fastapi>=0.100.0",
@@ -38,8 +38,6 @@ keywords = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -97,7 +95,7 @@ max-line-length = 120
 extend-ignore = ["E203", "W503"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -107,7 +105,7 @@ exclude = ["tests/"]
 
 [tool.black]
 line-length = 120
-target-version = ['py39']
+target-version = ['py311']
 
 [tool.isort]
 profile = "black"

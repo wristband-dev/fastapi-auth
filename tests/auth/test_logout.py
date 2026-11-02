@@ -184,7 +184,6 @@ class TestWristbandAuthLogout:
             login_url="https://{tenant_name}.auth.example.com/login",
             redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
             is_application_custom_domain_active=True,  # Uses "." separator
         )
         wristband_auth = WristbandAuth(config_with_subdomain)

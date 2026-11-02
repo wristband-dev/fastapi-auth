@@ -519,15 +519,7 @@ class TestCallbackReturnUrlValidation:
                 login_state_secret=TEST_LOGIN_STATE_SECRET,
                 login_url=f"https://{tenant_prefix}{self.root_domain}/auth/login",
                 redirect_uri=redirect_uri,
-                parse_tenant_from_root_domain=self.root_domain if use_tenant_subdomains else None,
                 application_authorization_requests_enabled=application_authorization_requests_enabled,
-                # Required by config validation when app-level authorization requests are enabled
-                # and login_url contains the {tenant_name} placeholder.
-                fallback_login_url=(
-                    f"https://{self.root_domain}/auth/login"
-                    if application_authorization_requests_enabled and use_tenant_subdomains
-                    else None
-                ),
                 wristband_application_vanity_domain="auth.example.com",
                 auto_configure_enabled=False,
             )
