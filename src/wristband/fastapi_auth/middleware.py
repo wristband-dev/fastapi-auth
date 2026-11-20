@@ -17,14 +17,16 @@ class SessionMiddleware(BaseHTTPMiddleware):
 
     Args:
         app: The FastAPI/Starlette application instance
-        secret_key: Secret key for session encryption (required)
+        secret_key: Secret key for session encryption (required). Pass a list of up to 3 secrets to rotate
+            secrets: the first one encrypts, and all of them are tried to decrypt.
         session_cookie_name: Name of the session cookie (default: "session")
         session_cookie_domain: Domain for session cookie (default: None)
         max_age: Cookie expiration time in seconds (default: 3600)
         path: Cookie path (default: "/")
         same_site: Cookie SameSite attribute (default: SameSiteOption.LAX)
         secure: Whether to use secure cookies (default: True)
-        enable_csrf_protection: Enable CSRF token generation and validation (default: False)
+        enable_csrf_protection: Enable CSRF token generation, and CSRF validation in the session auth
+            dependencies (default: False)
         csrf_cookie_name: Name of CSRF cookie (default: "CSRF-TOKEN")
         csrf_cookie_domain: Domain for CSRF cookie (default: None)
 
@@ -71,6 +73,8 @@ class SessionMiddleware(BaseHTTPMiddleware):
         keys = [secret_key] if isinstance(secret_key, str) else secret_key
         if not keys:
             raise ValueError("secret_key is required for session encryption")
+        if len(keys) > 3:
+            raise ValueError("secret_key: Maximum 3 secrets allowed for key rotation")
 
         if not session_cookie_name or not session_cookie_name.strip():
             raise ValueError("session_cookie_name cannot be empty")
@@ -110,7 +114,8 @@ class SessionMiddleware(BaseHTTPMiddleware):
         try:
             session_cookie = request.cookies.get(self._session_cookie_name)
             if session_cookie:
-                session_data = self._encryptor.decrypt(session_cookie)
+                # Reject session cookies older than max_age, even if the browser still sends them.
+                session_data = self._encryptor.decrypt(session_cookie, max_age=self._max_age)
                 session._load_from_dict(session_data)
             else:
                 session._load_from_dict({})

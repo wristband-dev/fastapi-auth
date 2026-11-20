@@ -90,6 +90,14 @@ class TestSessionMiddlewareInitialization:
         middleware = SessionMiddleware(app=Mock(), secret_key="a" * 256)
         assert middleware._encryptor is not None
 
+    def test_init_allows_three_secrets(self):
+        middleware = SessionMiddleware(app=Mock(), secret_key=["a" * 32, "b" * 32, "c" * 32])
+        assert middleware._encryptor is not None
+
+    def test_init_raises_when_more_than_three_secrets(self):
+        with pytest.raises(ValueError, match="Maximum 3 secrets allowed"):
+            SessionMiddleware(app=Mock(), secret_key=["a" * 32, "b" * 32, "c" * 32, "d" * 32])
+
     def test_init_with_multiple_keys(self):
         middleware = SessionMiddleware(app=Mock(), secret_key=["a" * 32, "b" * 32, "c" * 32])
         assert middleware._encryptor is not None
@@ -206,6 +214,34 @@ class TestSessionMiddlewareDispatch:
             return Response()
 
         await middleware.dispatch(request, call_next)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("age_seconds, expect_loaded", [(3599, True), (3601, False)])
+    async def test_dispatch_rejects_session_cookie_older_than_max_age(
+        self, secret_key, encryptor, age_seconds, expect_loaded
+    ):
+        """A copied session cookie stops working after max_age, even if a browser would still send it."""
+        middleware = SessionMiddleware(app=Mock(), secret_key=secret_key, max_age=3600)
+
+        # Fernet encrypts the current time into the token.
+        with patch("time.time", return_value=1_000_000.0):
+            encrypted = encryptor.encrypt({"user_id": "test_user", "is_authenticated": True})
+
+        request = Request(
+            scope={
+                "type": "http",
+                "headers": [(b"cookie", f"session={encrypted}".encode())],
+                "method": "GET",
+                "path": "/",
+            }
+        )
+
+        async def call_next(req):
+            assert (req.state.session.get("user_id") == "test_user") is expect_loaded
+            return Response()
+
+        with patch("time.time", return_value=1_000_000.0 + age_seconds):
+            await middleware.dispatch(request, call_next)
 
     @pytest.mark.asyncio
     async def test_dispatch_with_no_session_cookie(self, secret_key):

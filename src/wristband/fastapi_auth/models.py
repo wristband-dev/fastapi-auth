@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import Annotated, Any, Dict, Iterator, List, Optional, Protocol, TypedDict, Union
 
+from fastapi import Response
 from pydantic import BaseModel, ConfigDict, Field
 from wristband.python_jwt import JWTPayload
 
@@ -14,6 +15,11 @@ class AuthConfig(BaseModel):
     Represents the configuration for Wristband authentication.
 
     Attributes:
+        application_authorization_requests_enabled: Indicates whether application-level authorization requests
+            are enabled. Defaults to False. If True, for login and logout scenarios where neither a tenant name nor
+            a tenant custom domain can be deduced, the user is redirected to the Wristband Authorize Endpoint using
+            the application vanity domain to initiate an app-level authorization request. This field is
+            auto-configurable.
         auto_configure_enabled: Flag that tells the SDK to automatically set some of the SDK configuration values by
             calling to Wristband's SDK Auto-Configuration Endpoint. Any manually provided configurations will take
             precedence over the configs returned from the endpoint. Auto-configure is enabled by default. When disabled,
@@ -24,9 +30,13 @@ class AuthConfig(BaseModel):
             cookies. If not provided, it will default to using the client secret. For enhanced security, it is
             recommended to provide a value that is unique from the client secret.
         login_url: The URL for initiating the login request. This field is auto-configurable. Required when
-            auto-configure is disabled.
+            auto-configure is disabled. If using tenant subdomains, this value must contain the {tenant_name}
+            placeholder once, as the leftmost part of its hostname (e.g. https://{tenant_name}.yourapp.io/auth/login).
+            The root domain for parsing tenant subdomains (e.g. yourapp.io) and the fallback login URL used when the
+            tenant can't be resolved (e.g. https://yourapp.io/auth/login) are both derived from it.
         redirect_uri: The redirect URI for callback after authentication. This field is auto-configurable. Required
-            when auto-configure is disabled.
+            when auto-configure is disabled. If using tenant subdomains, this value must contain the {tenant_name}
+            placeholder once, as the leftmost part of its hostname.
         wristband_application_vanity_domain: The vanity domain of the Wristband application.
         custom_application_login_page_url: Custom application login (tenant discovery) page URL if you are
             self-hosting the application login/tenant discovery UI. This field is auto-configurable.
@@ -35,15 +45,20 @@ class AuthConfig(BaseModel):
             development (if necessary).
         is_application_custom_domain_active: Indicates whether an application-level custom domain
             is active in your Wristband application. This field is auto-configurable.
-        parse_tenant_from_root_domain: The root domain for your application from which to parse
-            out the tenant name. Indicates whether tenant subdomains are used for authentication.
-            This field is auto-configurable.
         scopes: The scopes required for authentication.
         token_expiration_buffer: Buffer time (in seconds) to subtract from the access token’s expiration time.
             This causes the token to be treated as expired before its actual expiration, helping to avoid token
             expiration during API calls. Defaults to 60 seconds.
+        trust_proxy_headers: Flag indicating whether to trust the X-Forwarded-Host header when determining the host
+            of an incoming request. Defaults to False. When False, the host is read from the Host header only. When
+            True, the first value of the X-Forwarded-Host header is used, falling back to the Host header. The host
+            is used to resolve tenant subdomains and to validate return URLs. Only enable this when your application
+            runs behind a reverse proxy that sets or overwrites the X-Forwarded-Host header. The request protocol is
+            always read from the request URL, so configure your ASGI server to trust your proxy's forwarded protocol
+            (e.g. Uvicorn's --forwarded-allow-ips) when TLS terminates at the proxy.
     """
 
+    application_authorization_requests_enabled: Optional[bool] = None
     client_id: str
     client_secret: str
     wristband_application_vanity_domain: str
@@ -53,10 +68,10 @@ class AuthConfig(BaseModel):
     is_application_custom_domain_active: Optional[bool] = None
     login_state_secret: Optional[str] = None
     login_url: Optional[str] = None
-    parse_tenant_from_root_domain: Optional[str] = None
     redirect_uri: Optional[str] = None
     scopes: List[str] = Field(default=["openid", "offline_access", "email"])
     token_expiration_buffer: int = 60
+    trust_proxy_headers: bool = False
 
 
 class SdkConfiguration(BaseModel):
@@ -64,8 +79,14 @@ class SdkConfiguration(BaseModel):
     Represents the SDK configuration returned from Wristband's SDK Auto-Configuration Endpoint.
 
     Attributes:
+        application_authorization_requests_enabled: Indicates whether application-level authorization requests
+            are enabled. If true, for login and logout scenarios where neither a tenant name nor a tenant custom
+            domain can be deduced, the user is redirected to the Wristband Authorize Endpoint using the
+            application vanity domain to initiate an app-level authorization request.
         custom_application_login_page_url: Custom application login (tenant discovery) page URL if you are
             self-hosting the application login/tenant discovery UI.
+        fallback_login_url: Fallback login URL to redirect to when the tenant placeholder in the login URL
+            cannot be resolved. Only applicable when application-level authorization requests are enabled.
         is_application_custom_domain_active: Indicates whether an application-level custom domain
             is active in your Wristband application.
         login_url: The URL for initiating the login request.
@@ -73,9 +94,11 @@ class SdkConfiguration(BaseModel):
         redirect_uri: The redirect URI for callback after authentication.
     """
 
+    application_authorization_requests_enabled: bool
     login_url: str
     redirect_uri: Optional[str] = None
     is_application_custom_domain_active: bool
+    fallback_login_url: Optional[str] = None
     custom_application_login_page_url: Optional[str] = None
     login_url_tenant_domain_suffix: Optional[str] = None
 
@@ -91,6 +114,8 @@ class SdkConfiguration(BaseModel):
             An SdkConfiguration instance with the parsed configuration data.
         """
         return SdkConfiguration(
+            application_authorization_requests_enabled=response.get("applicationAuthorizationRequestsEnabled", False),
+            fallback_login_url=response.get("fallbackLoginUrl"),
             login_url=response["loginUrl"],
             redirect_uri=response.get("redirectUri"),
             is_application_custom_domain_active=response.get("isApplicationCustomDomainActive", False),
@@ -482,21 +507,30 @@ class TokenData(BaseModel):
 class CompletedCallbackResult(BaseModel):
     """Callback successfully completed with data for creating a session."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     type: CallbackResultType = Field(CallbackResultType.COMPLETED, frozen=True)
     """Discriminator field indicating successful completion."""
     callback_data: CallbackData
     """Data returned from successful callback processing, used to create user session."""
+    response: Response
+    """
+    The redirect response to the URL returned by the application's redirect URL resolver,
+    with the login state cookie already cleared.
+    """
 
 
 class RedirectRequiredCallbackResult(BaseModel):
     """Redirect is required, generally to a login route or page."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     type: CallbackResultType = Field(CallbackResultType.REDIRECT_REQUIRED, frozen=True)
     """Discriminator field indicating redirect is required."""
-    redirect_url: str
-    """URL to redirect the user to retry authentication."""
     reason: CallbackFailureReason
     """Specific reason why the callback failed and requires redirect."""
+    response: Response
+    """The redirect response to the Login Endpoint, with the login state cookie already cleared."""
 
 
 CallbackResult = Annotated[Union[CompletedCallbackResult, RedirectRequiredCallbackResult], Field(discriminator="type")]
@@ -505,7 +539,9 @@ Union type representing the result of OAuth callback processing.
 
 The discriminator field 'type' is used to determine which variant:
 - CallbackResultType.COMPLETED: Callback succeeded, contains callback_data
-- CallbackResultType.REDIRECT_REQUIRED: Callback failed, contains redirect_url and reason
+- CallbackResultType.REDIRECT_REQUIRED: Callback failed, contains reason
+
+Both variants always contain a redirect response with the login state cookie already cleared.
 """
 
 
@@ -1137,14 +1173,12 @@ class SessionAuthConfig(TypedDict, total=False):
     """
     Configuration for session-based authentication in multi-strategy auth.
 
-    All fields are optional and have defaults.
+    All fields are optional and have defaults. CSRF tokens are validated when CSRF protection is
+    enabled on the SessionMiddleware (SessionMiddleware(enable_csrf_protection=True)).
     """
 
-    enable_csrf_protection: bool
-    """Enable CSRF token validation. Defaults to False."""
-
     csrf_header_name: str
-    """Header name containing CSRF token. Defaults to "X-CSRF-Token"."""
+    """Header name containing CSRF token. Defaults to "X-CSRF-TOKEN"."""
 
 
 class JWTAuthConfig(TypedDict, total=False):
@@ -1155,10 +1189,10 @@ class JWTAuthConfig(TypedDict, total=False):
     """
 
     jwks_cache_max_size: int
-    """Maximum number of JWKs to cache. Defaults to 100."""
+    """Maximum number of JWKs to cache. Defaults to 20."""
 
     jwks_cache_ttl: int
-    """Time-to-live for cached JWKs in seconds. Defaults to 3600 (1 hour)."""
+    """Time-to-live for cached JWKs in milliseconds. No default: keys stay cached until evicted by size."""
 
 
 class AuthResult:

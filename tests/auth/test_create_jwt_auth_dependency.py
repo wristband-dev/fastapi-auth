@@ -67,6 +67,25 @@ class TestCreateJwtAuthDependency:
             assert result.payload.sub == "user_123"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth_header", ["Basic abc123", "Bearer", "Bearer ", "abc123", "Bearer a b"])
+    async def test_raises_401_when_authorization_header_is_not_bearer(
+        self, wristband_auth: WristbandAuth, auth_header: str
+    ) -> None:
+        """Test that a malformed or non-Bearer header is a 401, not a 500 from python-jwt's ValueError"""
+        request = Mock(spec=Request)
+        request.method = "GET"
+        request.url = Mock()
+        request.url.path = "/api/protected"
+        request.headers = {"authorization": auth_header}
+
+        dependency = wristband_auth.create_jwt_auth_dependency()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await dependency(request)
+
+        assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+    @pytest.mark.asyncio
     async def test_raises_401_when_authorization_header_missing(self, wristband_auth: WristbandAuth) -> None:
         """Test that 401 is raised when Authorization header is missing"""
         request = Mock(spec=Request)

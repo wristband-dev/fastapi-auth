@@ -35,6 +35,7 @@ class TestCreateSessionAuthDependency:
 
         # Create mock session with attributes
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = True
         session.csrf_token = "valid_csrf_token"
         session.refresh_token = "valid_refresh_token"
@@ -70,6 +71,7 @@ class TestCreateSessionAuthDependency:
         request.headers = {"X-Custom-CSRF": "valid_csrf_token"}
 
         session = Mock()
+        session.csrf_protection_enabled = True
         session.is_authenticated = True
         session.csrf_token = "valid_csrf_token"
         session.refresh_token = "valid_refresh_token"
@@ -82,10 +84,7 @@ class TestCreateSessionAuthDependency:
             with patch.object(wristband_auth, "refresh_token_if_expired", new_callable=AsyncMock) as mock_refresh:
                 mock_refresh.return_value = None
 
-                dependency = wristband_auth.create_session_auth_dependency(
-                    enable_csrf_protection=True,
-                    csrf_header_name="X-Custom-CSRF",
-                )
+                dependency = wristband_auth.create_session_auth_dependency(csrf_header_name="X-Custom-CSRF")
                 await dependency(request)
 
                 # Verify is_csrf_token_valid was called with custom header name
@@ -119,6 +118,7 @@ class TestCreateSessionAuthDependency:
         request.state = Mock()
 
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = False
         request.state.session = session
 
@@ -134,8 +134,10 @@ class TestCreateSessionAuthDependency:
         self, wristband_auth: WristbandAuth, mock_authenticated_request: Request
     ) -> None:
         """Test that 403 is raised when CSRF token is invalid"""
+        mock_authenticated_request.state.session.csrf_protection_enabled = True
+
         with patch("wristband.fastapi_auth.auth.is_csrf_token_valid", return_value=False):
-            dependency = wristband_auth.create_session_auth_dependency(enable_csrf_protection=True)
+            dependency = wristband_auth.create_session_auth_dependency()
 
             with pytest.raises(HTTPException) as exc_info:
                 await dependency(mock_authenticated_request)
@@ -153,15 +155,13 @@ class TestCreateSessionAuthDependency:
         request.headers = {"X-Custom-CSRF": "wrong_token"}
 
         session = Mock()
+        session.csrf_protection_enabled = True
         session.is_authenticated = True
         session.csrf_token = "valid_csrf_token"
         request.state.session = session
 
         with patch("wristband.fastapi_auth.csrf.is_csrf_token_valid", return_value=False):
-            dependency = wristband_auth.create_session_auth_dependency(
-                enable_csrf_protection=True,
-                csrf_header_name="X-Custom-CSRF",
-            )
+            dependency = wristband_auth.create_session_auth_dependency(csrf_header_name="X-Custom-CSRF")
 
             with pytest.raises(HTTPException) as exc_info:
                 await dependency(request)
@@ -334,6 +334,7 @@ class TestCreateSessionAuthDependency:
         request1.headers = {"X-CSRF-TOKEN": "token1"}
 
         session1 = Mock()
+        session1.csrf_protection_enabled = True
         session1.is_authenticated = True
         session1.csrf_token = "token1"
         session1.refresh_token = "refresh1"
@@ -350,6 +351,7 @@ class TestCreateSessionAuthDependency:
         request2.headers = {"X-Custom-CSRF": "token2"}
 
         session2 = Mock()
+        session2.csrf_protection_enabled = True
         session2.is_authenticated = True
         session2.csrf_token = "token2"
         session2.refresh_token = "refresh2"
@@ -362,11 +364,8 @@ class TestCreateSessionAuthDependency:
                 mock_refresh.return_value = None
 
                 # Create two different dependencies
-                dependency1 = wristband_auth.create_session_auth_dependency(enable_csrf_protection=True)
-                dependency2 = wristband_auth.create_session_auth_dependency(
-                    enable_csrf_protection=True,
-                    csrf_header_name="X-Custom-CSRF",
-                )
+                dependency1 = wristband_auth.create_session_auth_dependency()
+                dependency2 = wristband_auth.create_session_auth_dependency(csrf_header_name="X-Custom-CSRF")
 
                 # Use both dependencies
                 await dependency1(request1)
@@ -452,7 +451,7 @@ class TestCreateSessionAuthDependency:
 
     @pytest.mark.asyncio
     async def test_csrf_validation_skipped_when_disabled(self, wristband_auth: WristbandAuth) -> None:
-        """Test that CSRF validation is skipped when enable_csrf_protection=False (default)"""
+        """Test that CSRF validation is skipped when the SessionMiddleware has CSRF protection off (default)"""
         request = Mock(spec=Request)
         request.method = "POST"
         request.url = Mock()
@@ -462,6 +461,7 @@ class TestCreateSessionAuthDependency:
         request.headers = {}
 
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = True
         session.csrf_token = "valid_csrf_token"
         session.refresh_token = "valid_refresh_token"
@@ -474,7 +474,7 @@ class TestCreateSessionAuthDependency:
             with patch.object(wristband_auth, "refresh_token_if_expired", new_callable=AsyncMock) as mock_refresh:
                 mock_refresh.return_value = None
 
-                # Default behavior - CSRF protection disabled
+                # Default behavior - CSRF protection disabled on the SessionMiddleware
                 dependency = wristband_auth.create_session_auth_dependency()
                 result = await dependency(request)
 
@@ -499,6 +499,7 @@ class TestCreateSessionAuthDependency:
         request.headers = {"X-CSRF-TOKEN": "wrong_token"}
 
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = True
         session.csrf_token = "correct_token"  # Different from header
         session.refresh_token = "valid_refresh_token"
@@ -532,6 +533,7 @@ class TestCreateSessionAuthDependency:
         request.headers = {}
 
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = True
         session.refresh_token = None  # No refresh token
         session.expires_at = 9999999999999
@@ -560,6 +562,7 @@ class TestCreateSessionAuthDependency:
         request.headers = {}
 
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = True
         session.refresh_token = "valid_refresh_token"
         session.expires_at = None  # No expiration time
@@ -588,6 +591,7 @@ class TestCreateSessionAuthDependency:
         request.headers = {}
 
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = True
         session.refresh_token = None
         session.expires_at = None
@@ -616,6 +620,7 @@ class TestCreateSessionAuthDependency:
         request.headers = {}
 
         session = Mock()
+        session.csrf_protection_enabled = False
         session.is_authenticated = True
         session.refresh_token = "valid_refresh_token"
         session.expires_at = 9999999999999

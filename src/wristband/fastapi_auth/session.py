@@ -38,6 +38,11 @@ class SessionManager:
 
     _max_cookie_size = 4096  # RFC 6265 browser limit
 
+    # A response that writes or deletes session cookies is specific to one user, so it must never be stored by
+    # the browser or by a shared cache (CDN, proxy) and served to someone else. "Cache-Control: no-store" is the
+    # modern directive. "Pragma: no-cache" is included for older HTTP/1.0 caches.
+    _no_cache_headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
     _encryptor: DataEncryptor
     _session_cookie_name: str
     _session_cookie_domain: Optional[str]
@@ -144,14 +149,32 @@ class SessionManager:
 
         Called by middleware after route execution. Performs cookie operations
         exactly once per request based on what was requested during route execution.
+        Whenever session cookies are written or deleted, the no-cache headers are written too.
+        Nothing is written when neither save() nor clear() is pending.
 
         Args:
             response: The FastAPI Response object to attach cookies to.
         """
         if self._needs_clear:
             self._delete_cookies(response)
+            self._write_no_cache_headers(response)
         elif self._needs_save:
             self._write_cookies(response)
+            self._write_no_cache_headers(response)
+
+    def _write_no_cache_headers(self, response: Response) -> None:
+        """
+        Internal method to write the no-cache headers to the response.
+
+        Sets Cache-Control and Pragma so that a response carrying session cookies is never
+        stored by the browser or a shared cache. Replaces any existing values, so calling it
+        more than once does not create duplicate headers.
+
+        Args:
+            response: The FastAPI Response object to write the headers to.
+        """
+        for name, value in self._no_cache_headers.items():
+            response.headers[name] = value
 
     def _write_cookies(self, response: Response) -> None:
         """
@@ -244,6 +267,23 @@ class SessionManager:
     ####################################
     # PUBLIC METHODS
     ####################################
+
+    @property
+    def csrf_protection_enabled(self) -> bool:
+        """
+        Whether CSRF protection is enabled, as set by SessionMiddleware(enable_csrf_protection=...).
+
+        The session auth dependencies read this to decide whether to validate the CSRF token, so
+        a single setting turns on both CSRF token generation and validation.
+        """
+        return self._enable_csrf_protection
+
+    @property
+    def session_cookie_name(self) -> str:
+        """
+        The name of the session cookie, as set by SessionMiddleware(session_cookie_name=...).
+        """
+        return self._session_cookie_name
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get session value with default."""

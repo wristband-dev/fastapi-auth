@@ -11,7 +11,15 @@ from urllib.parse import ParseResult, parse_qs, urlparse
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 
+from wristband.fastapi_auth.models import CallbackData
+
 TEST_LOGIN_STATE_SECRET = "this_is_a_very_long_secret_key_for_testing_purposes_123456789"
+TEST_APP_HOME_URL = "https://app.example.com/home"
+
+
+def resolve_test_redirect_url(request: Request, callback_data: CallbackData) -> str:
+    """Redirect URL resolver for callback() tests: the validated return URL, or the app home URL."""
+    return callback_data.return_url or TEST_APP_HOME_URL
 
 
 def create_mock_request(
@@ -19,6 +27,7 @@ def create_mock_request(
     query_params: Optional[Dict[str, str]] = None,
     cookies: Optional[Dict[str, str]] = None,
     host: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> Request:
     """
     Create a mock FastAPI Request object for testing.
@@ -28,6 +37,7 @@ def create_mock_request(
         query_params: Query parameters as key-value pairs
         cookies: Request cookies as key-value pairs
         host: Override host for subdomain testing
+        headers: Request headers as key-value pairs. The Host header defaults to the request host.
 
     Returns:
         Mock Request object configured with the provided data
@@ -41,6 +51,7 @@ def create_mock_request(
     # Mock URL object properly
     mock_url = Mock()
     mock_url.netloc = netloc
+    mock_url.scheme = parsed_url.scheme
     mock_url.__str__ = Mock(return_value=url)
     mock_request.url = mock_url
 
@@ -56,6 +67,13 @@ def create_mock_request(
         mock_query_params.get = Mock(return_value=None)
         mock_query_params.getlist = Mock(return_value=[])
         mock_request.query_params = mock_query_params
+
+    # Mock headers, with case-insensitive names like real request headers
+    request_headers: Dict[str, str] = {"host": netloc} if netloc else {}
+    request_headers.update({name.lower(): value for name, value in (headers or {}).items()})
+    mock_headers = Mock()
+    mock_headers.get = lambda key, default=None: request_headers.get(key.lower(), default)
+    mock_request.headers = mock_headers
 
     # Mock cookies
     mock_request.cookies = cookies or {}

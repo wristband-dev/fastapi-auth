@@ -13,6 +13,7 @@ class TestWristbandAuthLogout:
     def setup_method(self) -> None:
         """Set up test fixtures."""
         self.auth_config = AuthConfig(
+            auto_configure_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
@@ -68,7 +69,7 @@ class TestWristbandAuthLogout:
 
     @pytest.mark.asyncio
     async def test_logout_with_config_tenant_name_priority_2(self) -> None:
-        """Test logout uses config tenant domain as second priority."""
+        """Test logout uses config tenant name as second priority."""
         request = create_mock_request(
             "/logout", query_params={"tenant_name": "tenant1", "tenant_custom_domain": "tenant1.custom.com"}
         )
@@ -99,7 +100,7 @@ class TestWristbandAuthLogout:
 
             response = await self.wristband_auth.logout(request, logout_config)
 
-        # Should use config tenant domain (priority 2)
+        # Should use config tenant name (priority 2)
         expected_url = (
             "https://config-tenant-auth.example.com/api/v1/logout?client_id=test_client_id"
             "&redirect_url=https://app.example.com/logged-out"
@@ -145,7 +146,7 @@ class TestWristbandAuthLogout:
 
     @pytest.mark.asyncio
     async def test_logout_with_query_tenant_name_priority_4(self) -> None:
-        """Test logout uses query tenant domain as fourth priority."""
+        """Test logout uses query tenant name as fourth priority."""
         request = create_mock_request("/logout", query_params={"tenant_name": "tenant1"})
         logout_config = LogoutConfig()
 
@@ -168,7 +169,7 @@ class TestWristbandAuthLogout:
 
             response = await self.wristband_auth.logout(request, logout_config)
 
-        # Should use query tenant domain (priority 4)
+        # Should use query tenant name (priority 4)
         expected_url = "https://tenant1-auth.example.com/api/v1/logout?client_id=test_client_id"
         assert_redirect_no_cache(response, expected_url)
 
@@ -176,13 +177,13 @@ class TestWristbandAuthLogout:
     async def test_logout_with_subdomain_parsing_priority_4a(self) -> None:
         """Test logout uses subdomain parsing when enabled."""
         config_with_subdomain = AuthConfig(
+            auto_configure_enabled=False,
             client_id="test_client_id",
             client_secret="test_client_secret",
             login_state_secret=TEST_LOGIN_STATE_SECRET,
-            login_url="https://{tenant_domain}.auth.example.com/login",
-            redirect_uri="https://{tenant_domain}.app.example.com/callback",
+            login_url="https://{tenant_name}.auth.example.com/login",
+            redirect_uri="https://{tenant_name}.app.example.com/callback",
             wristband_application_vanity_domain="auth.example.com",
-            parse_tenant_from_root_domain="auth.example.com",
             is_application_custom_domain_active=True,  # Uses "." separator
         )
         wristband_auth = WristbandAuth(config_with_subdomain)
@@ -763,9 +764,65 @@ class TestWristbandAuthLogout:
         # Should call revoke_refresh_token
         mock_revoke.assert_called_once_with("test_refresh_token")
 
-        # Should use config tenant domain and include both state and redirect_url
+        # Should use config tenant name and include both state and redirect_url
         expected_url = (
             "https://config-tenant-auth.example.com/api/v1/logout?client_id=test_client_id"
             "&redirect_url=https://app.example.com/complete-logout&state=combined_test_state"
         )
         assert_redirect_no_cache(response, expected_url)
+
+
+class TestWristbandAuthLogoutParams:
+    """Logout config values are validated before anything happens, and URL-encoded into the Logout URL."""
+
+    def setup_method(self) -> None:
+        self.wristband_auth = WristbandAuth(
+            AuthConfig(
+                auto_configure_enabled=False,
+                client_id="test_client_id",
+                client_secret="test_client_secret",
+                login_state_secret=TEST_LOGIN_STATE_SECRET,
+                login_url="https://auth.example.com/login",
+                redirect_uri="https://app.example.com/callback",
+                wristband_application_vanity_domain="auth.example.com",
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_logout_url_encodes_redirect_url_and_state(self) -> None:
+        request = create_mock_request("/logout")
+        logout_config = LogoutConfig(
+            tenant_name="customer01",
+            redirect_url="https://app.example.com/logged-out?reason=timeout&tab=1",
+            state="a b&c=d",
+        )
+
+        response = await self.wristband_auth.logout(request, logout_config)
+
+        assert response.headers["location"] == (
+            "https://customer01-auth.example.com/api/v1/logout?client_id=test_client_id"
+            "&redirect_url=https%3A%2F%2Fapp.example.com%2Flogged-out%3Freason%3Dtimeout%26tab%3D1"
+            "&state=a%20b%26c%3Dd"
+        )
+
+    @pytest.mark.asyncio
+    async def test_logout_state_too_long_raises_before_revoking_refresh_token(self) -> None:
+        request = create_mock_request("/logout")
+        logout_config = LogoutConfig(refresh_token="refresh_token", state="x" * 513)
+
+        with patch.object(
+            self.wristband_auth._wristband_api, "revoke_refresh_token", new_callable=AsyncMock
+        ) as mock_revoke:
+            with pytest.raises(ValueError, match="cannot exceed 512 characters"):
+                await self.wristband_auth.logout(request, logout_config)
+
+        mock_revoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_logout_state_at_max_length_is_allowed(self) -> None:
+        request = create_mock_request("/logout")
+        logout_config = LogoutConfig(tenant_name="customer01", state="x" * 512)
+
+        response = await self.wristband_auth.logout(request, logout_config)
+
+        assert response.headers["location"].endswith("&state=" + "x" * 512)

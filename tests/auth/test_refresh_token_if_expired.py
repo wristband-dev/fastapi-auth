@@ -71,22 +71,27 @@ async def test_refresh_token_if_expired_whitespace_refresh_token(wristband_auth)
 @pytest.mark.asyncio
 async def test_refresh_token_if_expired_none_expires_at(wristband_auth):
     """Test that None expires_at raises TypeError."""
-    with pytest.raises(TypeError, match="The expiresAt field must be an integer greater than 0"):
+    with pytest.raises(TypeError, match="The expiresAt field must be an integer greater than or equal to 0"):
         await wristband_auth.refresh_token_if_expired("refresh_token", None)
 
 
 @pytest.mark.asyncio
 async def test_refresh_token_if_expired_negative_expires_at(wristband_auth):
     """Test that negative expires_at raises TypeError."""
-    with pytest.raises(TypeError, match="The expiresAt field must be an integer greater than 0"):
+    with pytest.raises(TypeError, match="The expiresAt field must be an integer greater than or equal to 0"):
         await wristband_auth.refresh_token_if_expired("refresh_token", -1)
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_zero_expires_at(wristband_auth):
-    """Test that zero expires_at raises TypeError."""
-    with pytest.raises(TypeError, match="The expiresAt field must be an integer greater than 0"):
-        await wristband_auth.refresh_token_if_expired("refresh_token", 0)
+async def test_refresh_token_if_expired_zero_expires_at(wristband_auth, mock_wristband_token_response):
+    """Test that zero expires_at is treated as an expiration in the past, so the token is refreshed."""
+    with patch.object(
+        wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response
+    ) as mock_refresh:
+        result = await wristband_auth.refresh_token_if_expired("refresh_token", 0)
+
+    mock_refresh.assert_called_once_with("refresh_token")
+    assert result is not None
 
 
 ########################################
@@ -202,18 +207,20 @@ async def test_refresh_token_if_expired_success_with_zero_buffer(auth_config, mo
 
 @pytest.mark.asyncio
 async def test_refresh_token_if_expired_invalid_grant_error(wristband_auth):
-    """Test that InvalidGrantError is immediately raised without retry."""
+    """Test that InvalidGrantError is raised as invalid_refresh_token, like any other 4xx, without retry."""
     past_timestamp = int((datetime.now().timestamp() - 100) * 1000)
 
     # Mock InvalidGrantError
     mock_error = InvalidGrantError("Refresh token expired")
     with patch.object(wristband_auth._wristband_api, "refresh_token", side_effect=mock_error) as mock_refresh:
-        with pytest.raises(InvalidGrantError) as exc_info:
+        with pytest.raises(WristbandError) as exc_info:
             await wristband_auth.refresh_token_if_expired("refresh_token", past_timestamp)
 
     # Verify API was called only once (no retry for InvalidGrantError)
     mock_refresh.assert_called_once_with("refresh_token")
-    assert exc_info.value.error == "invalid_grant"
+    assert not isinstance(exc_info.value, InvalidGrantError)
+    assert exc_info.value.error == "invalid_refresh_token"
+    assert exc_info.value.error_description == "Refresh token expired"
 
 
 @pytest.mark.asyncio
@@ -305,7 +312,7 @@ async def test_refresh_token_if_expired_other_exception(wristband_auth):
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_if_expired_timestamp_boundary(wristband_auth):
+async def test_refresh_token_if_expired_timestamp_boundary(wristband_auth, mock_wristband_token_response):
     """Test behavior at the exact expiration timestamp boundary."""
     # Set expires_at to exactly current time
     with patch("wristband.fastapi_auth.auth.datetime") as mock_datetime:
@@ -314,9 +321,26 @@ async def test_refresh_token_if_expired_timestamp_boundary(wristband_auth):
         mock_datetime.now.return_value = mock_now
 
         current_timestamp = int(1000000 * 1000)  # Same timestamp in milliseconds
-        result = await wristband_auth.refresh_token_if_expired("refresh_token", current_timestamp)
+        with patch.object(
+            wristband_auth._wristband_api, "refresh_token", return_value=mock_wristband_token_response
+        ) as mock_refresh:
+            result = await wristband_auth.refresh_token_if_expired("refresh_token", current_timestamp)
 
-    # Should return None since token is not yet expired (>= check)
+    # Should refresh since the token expires at exactly now (now >= expires_at)
+    mock_refresh.assert_called_once_with("refresh_token")
+    assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_if_expired_one_ms_before_boundary(wristband_auth):
+    """Test that a token expiring 1ms from now is not refreshed."""
+    with patch("wristband.fastapi_auth.auth.datetime") as mock_datetime:
+        mock_now = Mock()
+        mock_now.timestamp.return_value = 1000000  # Fixed timestamp
+        mock_datetime.now.return_value = mock_now
+
+        result = await wristband_auth.refresh_token_if_expired("refresh_token", 1000000 * 1000 + 1)
+
     assert result is None
 
 

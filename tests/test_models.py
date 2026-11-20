@@ -2,6 +2,7 @@ from typing import get_type_hints
 from unittest.mock import Mock
 
 import pytest
+from fastapi.responses import RedirectResponse
 from pydantic import ValidationError
 from wristband.python_jwt import JWTPayload
 
@@ -84,10 +85,12 @@ def test_auth_config_defaults():
     assert config.is_application_custom_domain_active is None
     assert config.login_state_secret is None
     assert config.login_url is None
-    assert config.parse_tenant_from_root_domain is None
     assert config.redirect_uri is None
     assert config.scopes == ["openid", "offline_access", "email"]
     assert config.token_expiration_buffer == 60
+    assert config.trust_proxy_headers is False
+    assert not hasattr(config, "parse_tenant_from_root_domain")
+    assert not hasattr(config, "fallback_login_url")
 
 
 def test_auth_config_auto_configure_disabled():
@@ -115,7 +118,6 @@ def test_auth_config_custom_values():
         custom_application_login_page_url="https://custom.com/login",
         dangerously_disable_secure_cookies=True,
         is_application_custom_domain_active=True,
-        parse_tenant_from_root_domain="example.com",
         scopes=["openid", "profile"],
         token_expiration_buffer=120,
     )
@@ -124,7 +126,6 @@ def test_auth_config_custom_values():
     assert config.custom_application_login_page_url == "https://custom.com/login"
     assert config.dangerously_disable_secure_cookies is True
     assert config.is_application_custom_domain_active is True
-    assert config.parse_tenant_from_root_domain == "example.com"
     assert config.scopes == ["openid", "profile"]
     assert config.token_expiration_buffer == 120
 
@@ -132,6 +133,7 @@ def test_auth_config_custom_values():
 def test_sdk_configuration_creation_minimal():
     """Test SdkConfiguration creation with only required fields."""
     config = SdkConfiguration(
+        application_authorization_requests_enabled=False,
         login_url="https://auth.example.com/login",
         redirect_uri="https://app.example.com/callback",
         is_application_custom_domain_active=False,
@@ -161,6 +163,7 @@ def test_sdk_configuration_from_api_response_null_redirect_uri():
 def test_sdk_configuration_creation_with_all_fields():
     """Test SdkConfiguration creation with all fields."""
     config = SdkConfiguration(
+        application_authorization_requests_enabled=False,
         login_url="https://auth.example.com/login",
         redirect_uri="https://app.example.com/callback",
         custom_application_login_page_url="https://custom.example.com/login",
@@ -245,6 +248,36 @@ def test_sdk_configuration_from_api_response_missing_optional_fields():
     assert config.custom_application_login_page_url is None
     assert config.is_application_custom_domain_active is False  # Gets default from .get()
     assert config.login_url_tenant_domain_suffix is None
+
+
+def test_sdk_configuration_from_api_response_app_level_auth_fields():
+    """Test from_api_response maps the app-level authorization request fields."""
+    api_response = {
+        "loginUrl": "https://{tenant_name}.example.com/login",
+        "redirectUri": "https://{tenant_name}.example.com/callback",
+        "isApplicationCustomDomainActive": False,
+        "loginUrlTenantDomainSuffix": "example.com",
+        "applicationAuthorizationRequestsEnabled": True,
+        "fallbackLoginUrl": "https://example.com/login",
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    assert config.application_authorization_requests_enabled is True
+    assert config.fallback_login_url == "https://example.com/login"
+
+
+def test_sdk_configuration_from_api_response_app_level_auth_fields_missing():
+    """Test from_api_response defaults the app-level authorization request fields when absent."""
+    api_response = {
+        "loginUrl": "https://auth.example.com/login",
+        "redirectUri": "https://app.example.com/callback",
+    }
+
+    config = SdkConfiguration.from_api_response(api_response)
+
+    assert config.application_authorization_requests_enabled is False
+    assert config.fallback_login_url is None
 
 
 def test_sdk_configuration_camelcase_to_snake_case_mapping():
@@ -746,23 +779,26 @@ def test_callback_result_completed():
         tenant_custom_domain=None,
     )
 
-    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data)
+    response = RedirectResponse("https://example.com/home", status_code=302)
+    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data, response=response)
 
     assert result.callback_data == callback_data
     assert result.type == CallbackResultType.COMPLETED
+    assert result.response is response
 
 
 def test_callback_result_redirect_required():
     """Test CallbackResult with REDIRECT_REQUIRED type."""
+    response = RedirectResponse("https://example.com/login", status_code=302)
     result = RedirectRequiredCallbackResult(
         type=CallbackResultType.REDIRECT_REQUIRED,
-        redirect_url="https://example.com/login",
         reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+        response=response,
     )
 
     assert result.type == CallbackResultType.REDIRECT_REQUIRED
-    assert result.redirect_url == "https://example.com/login"
     assert result.reason == CallbackFailureReason.MISSING_LOGIN_STATE
+    assert result.response is response
 
 
 def test_completed_callback_result_type_frozen():
@@ -786,7 +822,11 @@ def test_completed_callback_result_type_frozen():
         tenant_custom_domain=None,
     )
 
-    result = CompletedCallbackResult(type=CallbackResultType.COMPLETED, callback_data=callback_data)
+    result = CompletedCallbackResult(
+        type=CallbackResultType.COMPLETED,
+        callback_data=callback_data,
+        response=RedirectResponse("https://example.com/home", status_code=302),
+    )
 
     # Verify type is set correctly
     assert result.type == CallbackResultType.COMPLETED
@@ -800,8 +840,8 @@ def test_redirect_required_callback_result_type_frozen():
     """Test that RedirectRequiredCallbackResult.type field is frozen and cannot be modified."""
     result = RedirectRequiredCallbackResult(
         type=CallbackResultType.REDIRECT_REQUIRED,
-        redirect_url="https://example.com/login",
         reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+        response=RedirectResponse("https://example.com/login", status_code=302),
     )
 
     # Verify type is set correctly
@@ -810,6 +850,15 @@ def test_redirect_required_callback_result_type_frozen():
     # Attempt to modify frozen field should raise ValidationError
     with pytest.raises(ValidationError):
         result.type = CallbackResultType.COMPLETED  # type: ignore
+
+
+def test_redirect_required_callback_result_requires_response():
+    """Test RedirectRequiredCallbackResult cannot be created without a response."""
+    with pytest.raises(ValidationError):
+        RedirectRequiredCallbackResult(  # type: ignore[call-arg]
+            type=CallbackResultType.REDIRECT_REQUIRED,
+            reason=CallbackFailureReason.MISSING_LOGIN_STATE,
+        )
 
 
 def test_redirect_required_callback_result_all_reasons():
@@ -824,13 +873,13 @@ def test_redirect_required_callback_result_all_reasons():
     for reason in reasons:
         result = RedirectRequiredCallbackResult(
             type=CallbackResultType.REDIRECT_REQUIRED,
-            redirect_url="https://example.com/login",
             reason=reason,
+            response=RedirectResponse("https://example.com/login", status_code=302),
         )
 
         assert result.type == CallbackResultType.REDIRECT_REQUIRED
         assert result.reason == reason
-        assert result.redirect_url == "https://example.com/login"
+        assert result.response.headers["location"] == "https://example.com/login"
 
 
 def test_wristband_token_response_creation():
@@ -1594,7 +1643,8 @@ def test_session_auth_config_structure():
     """Test SessionAuthConfig TypedDict structure."""
     hints = get_type_hints(SessionAuthConfig)
 
-    assert "enable_csrf_protection" in hints
+    # CSRF protection is turned on with SessionMiddleware(enable_csrf_protection=...), not here.
+    assert "enable_csrf_protection" not in hints
     assert "csrf_header_name" in hints
 
 

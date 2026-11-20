@@ -1,10 +1,37 @@
 import base64
 import json
-from typing import Any, Dict, List, Union, cast
+import re
+from typing import Any, Dict, List, Optional, Union, cast
 
 from cryptography.fernet import Fernet, MultiFernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .models import RawUserInfo, UserInfo
+
+# One DNS label: letters, digits, and inner hyphens, up to 63 characters. A-Z and a-z are listed instead of using
+# re.IGNORECASE, which would let some non-ASCII letters (e.g. the Kelvin sign) match.
+_DNS_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_TENANT_NAME_PATTERN = re.compile(_DNS_LABEL)
+_DOMAIN_NAME_PATTERN = re.compile(rf"(?:{_DNS_LABEL}\.)+{_DNS_LABEL}")
+
+
+def to_safe_tenant_name(value: Optional[str]) -> str:
+    """
+    Returns the tenant name if it is a valid DNS label, otherwise an empty string. Tenant names become part of
+    Wristband URL hosts, so anything else (e.g. "evil.com#") could redirect users off Wristband.
+
+    fullmatch() is used instead of "$", which also matches before a trailing newline.
+    """
+    return value if value and _TENANT_NAME_PATTERN.fullmatch(value) else ""
+
+
+def to_safe_domain_name(value: Optional[str]) -> str:
+    """
+    Returns the domain if it is a valid DNS hostname (two or more labels, no port, path, or credentials),
+    otherwise an empty string.
+    """
+    return value if value and _DOMAIN_NAME_PATTERN.fullmatch(value) else ""
 
 
 def map_userinfo_claims(raw: RawUserInfo) -> UserInfo:
@@ -55,7 +82,11 @@ class DataEncryptor:
     to remain valid during key rotation).
 
     The secret key(s) must be at least 32 characters to ensure sufficient entropy.
+    Each Fernet key is derived from the whole secret with HKDF-SHA256.
     """
+
+    _hkdf_salt = b"wristband-fastapi-auth-v1"
+    _hkdf_info = b"fernet-key"
 
     cipher: Union[Fernet, MultiFernet]
 
@@ -85,16 +116,20 @@ class DataEncryptor:
             if len(key) < 32:
                 raise ValueError(f"Data Encryptor: secret_key at index {i} must be at least 32 characters long")
 
-            # Convert string to proper Fernet key format (base64 urlsafe-encoded 32 bytes)
-            key_bytes: bytes = key.encode("utf-8")[:32].ljust(32, b"\0")  # truncate to 32 bytes if longer
-            fernet_key: bytes = base64.urlsafe_b64encode(key_bytes)
-            fernet_keys.append(Fernet(fernet_key))
+            fernet_keys.append(Fernet(self._derive_fernet_key(key)))
 
         # Use MultiFernet if multiple keys, otherwise single Fernet
         if len(fernet_keys) > 1:
             self.cipher = MultiFernet(fernet_keys)
         else:
             self.cipher = fernet_keys[0]
+
+    def _derive_fernet_key(self, secret: str) -> bytes:
+        """
+        Derives a Fernet key (base64 urlsafe-encoded 32 bytes) from the whole secret using HKDF-SHA256.
+        """
+        hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=self._hkdf_salt, info=self._hkdf_info)
+        return base64.urlsafe_b64encode(hkdf.derive(secret.encode("utf-8")))
 
     def encrypt(self, data: Dict[str, Any]) -> str:
         """
@@ -118,7 +153,7 @@ class DataEncryptor:
         encrypted: bytes = self.cipher.encrypt(json_data)
         return encrypted.decode()
 
-    def decrypt(self, encrypted_str: str) -> Dict[str, Any]:
+    def decrypt(self, encrypted_str: str, max_age: Optional[int] = None) -> Dict[str, Any]:
         """
         Decrypt an encrypted string back into a dictionary.
 
@@ -126,17 +161,20 @@ class DataEncryptor:
 
         Args:
             encrypted_str (str): The encrypted string to decrypt.
+            max_age (Optional[int]): The maximum age in seconds of the encrypted data, checked against the
+                timestamp that Fernet encrypts into every token. A copied cookie is rejected once it's older
+                than this, even if the browser would still send it. No age check when None.
 
         Returns:
             dict: The decrypted data dictionary.
 
         Raises:
             ValueError: If the input string is empty.
-            cryptography.fernet.InvalidToken: If decryption fails with all keys.
+            cryptography.fernet.InvalidToken: If decryption fails with all keys, or the data is older than max_age.
             json.JSONDecodeError: If decrypted data is not valid JSON.
         """
         if not encrypted_str:
             raise ValueError("Empty encrypted string cannot be decrypted")
 
-        decrypted_bytes: bytes = self.cipher.decrypt(encrypted_str.encode())
+        decrypted_bytes: bytes = self.cipher.decrypt(encrypted_str.encode(), ttl=max_age)
         return cast(Dict[str, Any], json.loads(decrypted_bytes.decode()))
