@@ -44,8 +44,21 @@ def make_request(headers=None, csrf_token=None, raise_error=False):
 def test_create_csrf_token_generates_hex():
     token = create_csrf_token()
     assert isinstance(token, str)
-    assert len(token) == 32
+    assert len(token) == 64  # 32 random bytes
     int(token, 16)  # Valid hex
+
+
+def test_is_csrf_token_valid_rejects_non_ascii_header():
+    """compare_digest() raises for non-ASCII strings, so the tokens are compared as bytes."""
+    request = make_request(headers={"X-CSRF-TOKEN": "t\u00f6ken"}, csrf_token="token")
+    assert is_csrf_token_valid(request, "X-CSRF-TOKEN") is False
+
+
+def test_is_csrf_token_valid_uses_constant_time_comparison():
+    request = make_request(headers={"X-CSRF-TOKEN": "token"}, csrf_token="token")
+    with patch("wristband.fastapi_auth.csrf.secrets.compare_digest", return_value=True) as mock_compare:
+        assert is_csrf_token_valid(request, "X-CSRF-TOKEN") is True
+    mock_compare.assert_called_once_with(b"token", b"token")
 
 
 def test_create_csrf_token_uniqueness():

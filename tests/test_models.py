@@ -1643,7 +1643,8 @@ def test_session_auth_config_structure():
     """Test SessionAuthConfig TypedDict structure."""
     hints = get_type_hints(SessionAuthConfig)
 
-    assert "enable_csrf_protection" in hints
+    # CSRF protection is turned on with SessionMiddleware(enable_csrf_protection=...), not here.
+    assert "enable_csrf_protection" not in hints
     assert "csrf_header_name" in hints
 
 

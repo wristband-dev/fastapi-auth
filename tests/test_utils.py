@@ -1,8 +1,10 @@
+from unittest.mock import patch
+
 import pytest
 from cryptography.fernet import InvalidToken
 
 from wristband.fastapi_auth.models import RawUserInfo, UserInfo, UserInfoRole
-from wristband.fastapi_auth.utils import DataEncryptor, map_userinfo_claims
+from wristband.fastapi_auth.utils import DataEncryptor, map_userinfo_claims, to_safe_domain_name, to_safe_tenant_name
 
 SECRET = "a" * 32  # valid 32-char secret
 LONG_SECRET = "a" * 64  # longer than 32 chars
@@ -367,13 +369,113 @@ def test_exactly_32_char_secret():
     assert decrypted == data
 
 
-def test_long_secret_truncated():
-    """Test that secrets longer than 32 chars are properly truncated."""
+def test_long_secret_roundtrip():
+    """Test that secrets longer than 32 chars work."""
     enc = DataEncryptor(LONG_SECRET)
     data = {"test": "value"}
     encrypted = enc.encrypt(data)
     decrypted = enc.decrypt(encrypted)
     assert decrypted == data
+
+
+def test_key_is_derived_from_whole_secret():
+    """Test that characters past the first 32 change the key, so they aren't ignored."""
+    enc1 = DataEncryptor("a" * 32 + "first_suffix")
+    enc2 = DataEncryptor("a" * 32 + "second_suffix")
+
+    encrypted = enc1.encrypt({"user_id": "123"})
+
+    with pytest.raises(InvalidToken):
+        enc2.decrypt(encrypted)
+
+
+def test_decrypt_accepts_data_within_max_age():
+    enc = DataEncryptor(SECRET)
+    with patch("time.time", return_value=1_000_000.0):
+        encrypted = enc.encrypt({"user_id": "123"})
+
+    with patch("time.time", return_value=1_000_000.0 + 3599):
+        assert enc.decrypt(encrypted, max_age=3600) == {"user_id": "123"}
+
+
+def test_decrypt_rejects_data_older_than_max_age():
+    enc = DataEncryptor(SECRET)
+    with patch("time.time", return_value=1_000_000.0):
+        encrypted = enc.encrypt({"user_id": "123"})
+
+    with patch("time.time", return_value=1_000_000.0 + 3601):
+        with pytest.raises(InvalidToken):
+            enc.decrypt(encrypted, max_age=3600)
+
+
+def test_decrypt_rejects_data_older_than_max_age_with_rotated_keys():
+    enc = DataEncryptor([SECRET, "b" * 32])
+    with patch("time.time", return_value=1_000_000.0):
+        encrypted = enc.encrypt({"user_id": "123"})
+
+    with patch("time.time", return_value=1_000_000.0 + 3601):
+        with pytest.raises(InvalidToken):
+            enc.decrypt(encrypted, max_age=3600)
+
+
+####################################
+# SAFE TENANT AND DOMAIN NAMES
+####################################
+
+
+@pytest.mark.parametrize("value", ["customer01", "Customer-01", "a", "a" * 63, "0tenant", "a-b-c"])
+def test_to_safe_tenant_name_accepts_dns_labels(value):
+    assert to_safe_tenant_name(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "evil.com#",
+        "evil.com",
+        "-customer01",
+        "customer01-",
+        "a" * 64,
+        "customer_01",
+        "customer 01",
+        "customer01\n",  # "$" would match before a trailing newline, fullmatch() doesn't
+        "\ncustomer01",
+        "\u212a",  # Kelvin sign, which matches [a-z] under re.IGNORECASE
+        "t\u00e9nant",
+    ],
+)
+def test_to_safe_tenant_name_rejects_everything_else(value):
+    assert to_safe_tenant_name(value) == ""
+
+
+@pytest.mark.parametrize("value", ["tenant.example.com", "Auth.Customer01.COM", "a.b", "x-1.example-domain.io"])
+def test_to_safe_domain_name_accepts_hostnames(value):
+    assert to_safe_domain_name(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "localhost",
+        "evil.com#",
+        "evil.com/path",
+        "evil.com:443",
+        "user@evil.com",
+        ".evil.com",
+        "evil.com.",
+        "evil..com",
+        "-evil.com",
+        "evil-.com",
+        "tenant.example.com\n",
+        "\u212a.example.com",
+    ],
+)
+def test_to_safe_domain_name_rejects_everything_else(value):
+    assert to_safe_domain_name(value) == ""
 
 
 def test_different_keys_cannot_decrypt():

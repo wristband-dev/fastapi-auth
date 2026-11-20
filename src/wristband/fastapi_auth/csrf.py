@@ -20,9 +20,9 @@ def create_csrf_token() -> str:
     Generate a cryptographically secure CSRF token.
 
     Returns:
-        A 32-character hexadecimal CSRF token
+        A 64-character hexadecimal CSRF token (32 random bytes)
     """
-    return secrets.token_hex(16)
+    return secrets.token_hex(32)
 
 
 def update_csrf_cookie(
@@ -96,7 +96,9 @@ def is_csrf_token_valid(request: Request, csrf_header_name: str) -> bool:
             )
             return False
 
-        tokens_match = str(session_csrf) == str(header_csrf)
+        # Constant-time comparison, so the response time doesn't reveal how much of the token matched.
+        # Bytes are compared because compare_digest() only accepts ASCII strings.
+        tokens_match = secrets.compare_digest(str(session_csrf).encode("utf-8"), str(header_csrf).encode("utf-8"))
         if not tokens_match:
             _logger.debug(f"CSRF validation failed - tokens do not match. Header: {csrf_header_name}")
 

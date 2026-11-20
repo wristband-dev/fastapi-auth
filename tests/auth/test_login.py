@@ -1037,7 +1037,7 @@ class TestWristbandAuthAppLevelUrls:
 
         assert result == (
             "https://auth.example.com/login?client_id=test_client_id"
-            "&state=https%3A//app.example.com/dashboard%3Ftab%3D1"
+            "&state=https%3A%2F%2Fapp.example.com%2Fdashboard%3Ftab%3D1"
         )
 
     def test_app_level_login_url_omits_state_without_return_url(self) -> None:
@@ -1632,42 +1632,48 @@ class TestWristbandAuthResolveReturnUrl:
 
         assert result is None
 
-    def test_resolve_return_url_too_long_returns_none(self) -> None:
-        """Test _resolve_return_url returns None when URL exceeds maximum length."""
-        # Create a URL longer than _return_url_char_max_len (450 characters)
-        long_url = "https://app.example.com/" + "x" * 500
+    def test_resolve_return_url_long_query_param_kept(self) -> None:
+        """Test _resolve_return_url keeps a long return URL, since the login state cookie holds it at any length."""
+        long_url = "https://app.example.com/" + "x" * 1000
         request = create_mock_request("/login", query_params={"return_url": long_url})
 
-        with patch("logging.Logger.debug") as mock_debug:
-            result = self.wristband_auth._resolve_return_url(request)
+        assert self.wristband_auth._resolve_return_url(request) == long_url
 
-            assert result is None
-            # Verify that a debug log was made about the long URL
-            mock_debug.assert_called_once()
-            assert "Return URL exceeds 450 characters" in mock_debug.call_args[0][0]
-
-    def test_resolve_return_url_parameter_too_long_returns_none(self) -> None:
-        """Test _resolve_return_url returns None when parameter URL exceeds maximum length."""
-        long_url = "https://app.example.com/" + "x" * 500
+    def test_resolve_return_url_long_login_config_value_kept(self) -> None:
+        """Test _resolve_return_url keeps a long LoginConfig return URL."""
+        long_url = "https://app.example.com/" + "x" * 1000
         request = create_mock_request("/login")
 
-        with patch("logging.Logger.debug") as mock_debug:
-            result = self.wristband_auth._resolve_return_url(request, long_url)
+        assert self.wristband_auth._resolve_return_url(request, long_url) == long_url
 
-            assert result is None
-            mock_debug.assert_called_once()
-            assert "Return URL exceeds 450 characters" in mock_debug.call_args[0][0]
-
-    def test_resolve_return_url_exactly_max_length_allowed(self) -> None:
-        """Test _resolve_return_url allows URL exactly at maximum length."""
-        # Create a URL exactly 450 characters long
+    def test_app_level_login_url_keeps_state_at_max_length(self) -> None:
+        """Test the return URL goes in the state param when it's exactly 512 characters."""
         base_url = "https://app.example.com/"
-        padding_needed = 450 - len(base_url)
-        exact_length_url = base_url + "x" * padding_needed
+        exact_length_url = base_url + "x" * (512 - len(base_url))
 
-        request = create_mock_request("/login", query_params={"return_url": exact_length_url})
+        result = self.wristband_auth._get_app_level_login_url(
+            "auth.example.com", "test_client_id", None, exact_length_url
+        )
 
-        result = self.wristband_auth._resolve_return_url(request) or ""
+        assert "&state=" in result
 
-        assert result == exact_length_url
-        assert len(result) == 450
+    def test_app_level_login_url_drops_state_over_max_length(self) -> None:
+        """Test the return URL is dropped from the state param when it's over 512 characters."""
+        base_url = "https://app.example.com/"
+        long_url = base_url + "x" * (513 - len(base_url))
+
+        with patch("logging.Logger.debug") as mock_debug:
+            result = self.wristband_auth._get_app_level_login_url("auth.example.com", "test_client_id", None, long_url)
+
+        assert result == "https://auth.example.com/login?client_id=test_client_id"
+        mock_debug.assert_called_once()
+        assert "Return URL exceeds 512 characters" in mock_debug.call_args[0][0]
+
+    def test_app_level_login_url_checks_raw_length_before_encoding(self) -> None:
+        """Test the 512-character limit applies to the raw value, not the longer URL-encoded value."""
+        # 512 raw characters, but URL encoding expands each "/" to "%2F".
+        url = "https://app.example.com/" + "/" * (512 - len("https://app.example.com/"))
+
+        result = self.wristband_auth._get_app_level_login_url("auth.example.com", "test_client_id", None, url)
+
+        assert "&state=" in result

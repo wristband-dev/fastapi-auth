@@ -366,7 +366,7 @@ class TestSessionFromCallback:
         assert "csrf_token" in session
         csrf_token = session["csrf_token"]
         assert isinstance(csrf_token, str)
-        assert len(csrf_token) == 32  # Token is 32 hex characters
+        assert len(csrf_token) == 64  # Token is 64 hex characters (32 random bytes)
         # Verify it's valid hex
         int(csrf_token, 16)
 

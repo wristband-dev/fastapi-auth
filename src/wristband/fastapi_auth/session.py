@@ -268,6 +268,23 @@ class SessionManager:
     # PUBLIC METHODS
     ####################################
 
+    @property
+    def csrf_protection_enabled(self) -> bool:
+        """
+        Whether CSRF protection is enabled, as set by SessionMiddleware(enable_csrf_protection=...).
+
+        The session auth dependencies read this to decide whether to validate the CSRF token, so
+        a single setting turns on both CSRF token generation and validation.
+        """
+        return self._enable_csrf_protection
+
+    @property
+    def session_cookie_name(self) -> str:
+        """
+        The name of the session cookie, as set by SessionMiddleware(session_cookie_name=...).
+        """
+        return self._session_cookie_name
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get session value with default."""
         return self._data.get(key, default)

@@ -403,7 +403,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(self.wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(self.wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
@@ -485,7 +485,7 @@ class TestWristbandAuthCallback:
                 new_callable=AsyncMock,
                 return_value=True,
             ) as mock_validate_domain,
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
@@ -554,7 +554,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"
@@ -728,7 +728,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://{tenant_name}.auth.example.com/login"
@@ -874,7 +874,7 @@ class TestWristbandAuthCallback:
             ) as mock_parse_tenant,
             patch.object(wristband_auth._wristband_api, "get_tokens", return_value=mock_token_response),
             patch.object(wristband_auth._wristband_api, "get_userinfo", return_value=mock_user_info),
-            patch("time.time", return_value=1640995200.0),
+            patch("wristband.fastapi_auth.auth.time", **{"time.return_value": 1640995200.0}),
         ):
 
             mock_login_url.return_value = "https://auth.example.com/login"

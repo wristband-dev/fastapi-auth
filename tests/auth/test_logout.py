@@ -770,3 +770,59 @@ class TestWristbandAuthLogout:
             "&redirect_url=https://app.example.com/complete-logout&state=combined_test_state"
         )
         assert_redirect_no_cache(response, expected_url)
+
+
+class TestWristbandAuthLogoutParams:
+    """Logout config values are validated before anything happens, and URL-encoded into the Logout URL."""
+
+    def setup_method(self) -> None:
+        self.wristband_auth = WristbandAuth(
+            AuthConfig(
+                auto_configure_enabled=False,
+                client_id="test_client_id",
+                client_secret="test_client_secret",
+                login_state_secret=TEST_LOGIN_STATE_SECRET,
+                login_url="https://auth.example.com/login",
+                redirect_uri="https://app.example.com/callback",
+                wristband_application_vanity_domain="auth.example.com",
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_logout_url_encodes_redirect_url_and_state(self) -> None:
+        request = create_mock_request("/logout")
+        logout_config = LogoutConfig(
+            tenant_name="customer01",
+            redirect_url="https://app.example.com/logged-out?reason=timeout&tab=1",
+            state="a b&c=d",
+        )
+
+        response = await self.wristband_auth.logout(request, logout_config)
+
+        assert response.headers["location"] == (
+            "https://customer01-auth.example.com/api/v1/logout?client_id=test_client_id"
+            "&redirect_url=https%3A%2F%2Fapp.example.com%2Flogged-out%3Freason%3Dtimeout%26tab%3D1"
+            "&state=a%20b%26c%3Dd"
+        )
+
+    @pytest.mark.asyncio
+    async def test_logout_state_too_long_raises_before_revoking_refresh_token(self) -> None:
+        request = create_mock_request("/logout")
+        logout_config = LogoutConfig(refresh_token="refresh_token", state="x" * 513)
+
+        with patch.object(
+            self.wristband_auth._wristband_api, "revoke_refresh_token", new_callable=AsyncMock
+        ) as mock_revoke:
+            with pytest.raises(ValueError, match="cannot exceed 512 characters"):
+                await self.wristband_auth.logout(request, logout_config)
+
+        mock_revoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_logout_state_at_max_length_is_allowed(self) -> None:
+        request = create_mock_request("/logout")
+        logout_config = LogoutConfig(tenant_name="customer01", state="x" * 512)
+
+        response = await self.wristband_auth.logout(request, logout_config)
+
+        assert response.headers["location"].endswith("&state=" + "x" * 512)

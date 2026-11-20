@@ -33,24 +33,46 @@ class TestCreateAuthDependency:
         return WristbandAuth(auth_config)
 
     @pytest.fixture
-    def mock_request(self) -> Request:
-        """Create a basic mock request"""
-        request = Mock(spec=Request)
-        request.method = "GET"
-        request.url = Mock()
-        request.url.path = "/api/protected"
-        request.state = Mock()
-        request.headers = {}
-        return request
-
-    @pytest.fixture
     def mock_session(self) -> Mock:
         """Create a mock session"""
         session = Mock()
         session.is_authenticated = True
         session.user_id = "user_123"
+        session.session_cookie_name = "session"
         session.save = Mock()
         return session
+
+    @pytest.fixture
+    def mock_request(self, mock_session: Mock) -> Request:
+        """Create a mock request that carries both a session cookie and an Authorization header"""
+        request = Mock(spec=Request)
+        request.method = "GET"
+        request.url = Mock()
+        request.url.path = "/api/protected"
+        request.state = Mock()
+        request.state.session = mock_session
+        request.headers = {"authorization": "Bearer test_token"}
+        request.cookies = {"session": "encrypted_session"}
+        return request
+
+    @pytest.fixture
+    def session_only_request(self, mock_request: Request) -> Request:
+        """A request that carries only a session cookie"""
+        mock_request.headers = {}
+        return mock_request
+
+    @pytest.fixture
+    def jwt_only_request(self, mock_request: Request) -> Request:
+        """A request that carries only an Authorization header"""
+        mock_request.cookies = {}
+        return mock_request
+
+    @pytest.fixture
+    def no_credential_request(self, mock_request: Request) -> Request:
+        """A request that carries neither a session cookie nor an Authorization header"""
+        mock_request.headers = {}
+        mock_request.cookies = {}
+        return mock_request
 
     @pytest.fixture
     def mock_jwt_result(self) -> JWTAuthResult:
@@ -118,7 +140,7 @@ class TestCreateAuthDependency:
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_validate:
             mock_validate.return_value = mock_session
 
-            session_config = SessionAuthConfig(enable_csrf_protection=True, csrf_header_name="X-Custom-CSRF")
+            session_config = SessionAuthConfig(csrf_header_name="X-Custom-CSRF")
 
             dependency = wristband_auth.create_auth_dependency(
                 strategies=[AuthStrategy.SESSION], session_config=session_config
@@ -126,7 +148,7 @@ class TestCreateAuthDependency:
             await dependency(mock_request)
 
             # Verify config was passed to validator
-            mock_validate.assert_called_once_with(mock_request, True, "X-Custom-CSRF")
+            mock_validate.assert_called_once_with(mock_request, "X-Custom-CSRF")
 
     @pytest.mark.asyncio
     async def test_session_strategy_without_config_uses_defaults(
@@ -140,7 +162,7 @@ class TestCreateAuthDependency:
             await dependency(mock_request)
 
             # Verify defaults were used
-            mock_validate.assert_called_once_with(mock_request, False, "X-CSRF-TOKEN")
+            mock_validate.assert_called_once_with(mock_request, "X-CSRF-TOKEN")
 
     # ============================================================================
     # JWT STRATEGY TESTS
@@ -216,90 +238,140 @@ class TestCreateAuthDependency:
                 mock_jwt_auth.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_multi_strategy_falls_back_to_jwt(
-        self, wristband_auth: WristbandAuth, mock_request: Request, mock_jwt_result: JWTAuthResult
+    async def test_multi_strategy_skips_session_without_session_cookie(
+        self, wristband_auth: WristbandAuth, jwt_only_request: Request, mock_jwt_result: JWTAuthResult
     ) -> None:
-        """Test that JWT is tried when SESSION fails"""
+        """Test that SESSION is skipped when the request has no session cookie"""
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
             with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
-                # SESSION fails with 401
-                mock_session_auth.side_effect = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-                # JWT succeeds
                 mock_jwt_auth.return_value = mock_jwt_result
 
                 dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
-                result = await dependency(mock_request)
+                result = await dependency(jwt_only_request)
 
-                # JWT succeeded after SESSION failed
                 assert result.strategy == AuthStrategy.JWT
                 assert result.jwt_result == mock_jwt_result
-
-                # Both were tried
-                mock_session_auth.assert_called_once()
-                mock_jwt_auth.assert_called_once()
+                mock_session_auth.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_multi_strategy_all_fail_raises_last_exception(
-        self, wristband_auth: WristbandAuth, mock_request: Request
+    async def test_multi_strategy_skips_jwt_without_authorization_header(
+        self, wristband_auth: WristbandAuth, session_only_request: Request, mock_session: Mock
     ) -> None:
-        """Test that the last exception is raised when all strategies fail"""
+        """Test that JWT is skipped when the request has no Authorization header"""
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
             with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
-                # Both fail
+                mock_session_auth.return_value = mock_session
+
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.JWT, AuthStrategy.SESSION])
+                result = await dependency(session_only_request)
+
+                assert result.strategy == AuthStrategy.SESSION
+                mock_jwt_auth.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multi_strategy_session_failure_stops_without_trying_jwt(
+        self, wristband_auth: WristbandAuth, mock_request: Request
+    ) -> None:
+        """Test that a failed session credential is final, even when a JWT is also present"""
+        with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
+            with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
                 mock_session_auth.side_effect = HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-                mock_jwt_auth.side_effect = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
                 dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
 
                 with pytest.raises(HTTPException) as exc_info:
                     await dependency(mock_request)
 
-                # Should raise the LAST exception (JWT's 401)
+                assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+                mock_jwt_auth.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multi_strategy_jwt_failure_stops_without_trying_session(
+        self, wristband_auth: WristbandAuth, mock_request: Request
+    ) -> None:
+        """Test that a failed JWT credential is final, even when a session cookie is also present"""
+        with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
+            with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
+                mock_jwt_auth.side_effect = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.JWT, AuthStrategy.SESSION])
+
+                with pytest.raises(HTTPException) as exc_info:
+                    await dependency(mock_request)
+
                 assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+                mock_session_auth.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_multi_strategy_preserves_exception_details(
-        self, wristband_auth: WristbandAuth, mock_request: Request
+        self, wristband_auth: WristbandAuth, session_only_request: Request
     ) -> None:
-        """Test that exception details from last strategy are preserved"""
+        """Test that the failing strategy's exception is raised as-is"""
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
-            with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
-                # SESSION fails with 403
-                mock_session_auth.side_effect = HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed"
-                )
-                # JWT fails with custom 401
-                mock_jwt_auth.side_effect = HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
-                )
+            mock_session_auth.side_effect = HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed"
+            )
 
-                dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
 
-                with pytest.raises(HTTPException) as exc_info:
-                    await dependency(mock_request)
+            with pytest.raises(HTTPException) as exc_info:
+                await dependency(session_only_request)
 
-                # Should preserve JWT's exception details
-                assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
-                assert exc_info.value.detail == "Token expired"
+            assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+            assert exc_info.value.detail == "CSRF validation failed"
 
     @pytest.mark.asyncio
-    async def test_multi_strategy_handles_unexpected_exceptions(
-        self, wristband_auth: WristbandAuth, mock_request: Request, mock_jwt_result: JWTAuthResult
+    async def test_multi_strategy_unexpected_exceptions_propagate(
+        self, wristband_auth: WristbandAuth, mock_request: Request
     ) -> None:
-        """Test that unexpected exceptions are caught and next strategy is tried"""
+        """Test that unexpected exceptions aren't swallowed and don't fall through to the next strategy"""
         with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
             with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
-                # SESSION raises unexpected exception
                 mock_session_auth.side_effect = RuntimeError("Database connection failed")
-                # JWT succeeds
-                mock_jwt_auth.return_value = mock_jwt_result
 
                 dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
-                result = await dependency(mock_request)
 
-                # JWT succeeded after SESSION raised unexpected error
-                assert result.strategy == AuthStrategy.JWT
-                assert result.jwt_result == mock_jwt_result
+                with pytest.raises(RuntimeError, match="Database connection failed"):
+                    await dependency(mock_request)
+
+                mock_jwt_auth.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "strategies",
+        [
+            [AuthStrategy.SESSION],
+            [AuthStrategy.JWT],
+            [AuthStrategy.SESSION, AuthStrategy.JWT],
+            [AuthStrategy.JWT, AuthStrategy.SESSION],
+        ],
+    )
+    async def test_no_credentials_raises_401(
+        self, wristband_auth: WristbandAuth, no_credential_request: Request, strategies: list
+    ) -> None:
+        """Test that a 401 is raised when every strategy is skipped"""
+        with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
+            with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
+                dependency = wristband_auth.create_auth_dependency(strategies=strategies)
+
+                with pytest.raises(HTTPException) as exc_info:
+                    await dependency(no_credential_request)
+
+                assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+                mock_session_auth.assert_not_called()
+                mock_jwt_auth.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_session_strategy_raises_runtime_error_without_session_middleware(
+        self, wristband_auth: WristbandAuth, mock_request: Request
+    ) -> None:
+        """Test that SESSION raises a RuntimeError when SessionMiddleware is not registered"""
+        mock_request.state = Mock(spec=[])
+
+        dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
+
+        with pytest.raises(RuntimeError, match="SessionMiddleware"):
+            await dependency(mock_request)
 
     @pytest.mark.asyncio
     async def test_multi_strategy_order_matters(
@@ -343,26 +415,19 @@ class TestCreateAuthDependency:
                 assert any("Trying SESSION authentication" in msg for msg in debug_calls)
 
     @pytest.mark.asyncio
-    async def test_logs_strategy_failures(self, wristband_auth: WristbandAuth, mock_request: Request) -> None:
-        """Test that strategy failures are logged"""
-        with patch.object(wristband_auth, "_validate_session_auth", new_callable=AsyncMock) as mock_session_auth:
-            with patch.object(wristband_auth, "_validate_jwt_auth", new_callable=AsyncMock) as mock_jwt_auth:
-                mock_session_auth.side_effect = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-                mock_jwt_auth.side_effect = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    async def test_logs_skipped_strategies(self, wristband_auth: WristbandAuth, no_credential_request: Request) -> None:
+        """Test that skipped strategies are logged"""
+        with patch("wristband.fastapi_auth.auth._logger") as mock_logger:
+            dependency = wristband_auth.create_auth_dependency(strategies=[AuthStrategy.SESSION, AuthStrategy.JWT])
 
-                with patch("wristband.fastapi_auth.auth._logger") as mock_logger:
-                    dependency = wristband_auth.create_auth_dependency(
-                        strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
-                    )
+            with pytest.raises(HTTPException):
+                await dependency(no_credential_request)
 
-                    with pytest.raises(HTTPException):
-                        await dependency(mock_request)
-
-                    # Check logs
-                    debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
-                    assert any("session authentication failed with status 401" in msg for msg in debug_calls)
-                    assert any("jwt authentication failed with status 401" in msg for msg in debug_calls)
-                    assert any("All authentication strategies failed" in msg for msg in debug_calls)
+            # Check logs
+            debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
+            assert any("Skipping session authentication" in msg for msg in debug_calls)
+            assert any("Skipping jwt authentication" in msg for msg in debug_calls)
+            assert any("No authentication credentials found for any strategy" in msg for msg in debug_calls)
 
     # ============================================================================
     # DEPENDENCY REUSABILITY TESTS
@@ -395,10 +460,10 @@ class TestCreateAuthDependency:
 
             # Different configs
             dep1 = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION], session_config=SessionAuthConfig(enable_csrf_protection=True)
+                strategies=[AuthStrategy.SESSION], session_config=SessionAuthConfig(csrf_header_name="X-CSRF-A")
             )
             dep2 = wristband_auth.create_auth_dependency(
-                strategies=[AuthStrategy.SESSION], session_config=SessionAuthConfig(enable_csrf_protection=False)
+                strategies=[AuthStrategy.SESSION], session_config=SessionAuthConfig(csrf_header_name="X-CSRF-B")
             )
 
             await dep1(mock_request)
@@ -407,5 +472,5 @@ class TestCreateAuthDependency:
             # Verify different configs were used
             assert mock_validate.call_count == 2
             calls = mock_validate.call_args_list
-            assert calls[0][0][1] is True  # enable_csrf_protection
-            assert calls[1][0][1] is False  # enable_csrf_protection
+            assert calls[0][0][1] == "X-CSRF-A"
+            assert calls[1][0][1] == "X-CSRF-B"

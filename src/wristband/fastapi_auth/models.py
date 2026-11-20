@@ -1173,14 +1173,12 @@ class SessionAuthConfig(TypedDict, total=False):
     """
     Configuration for session-based authentication in multi-strategy auth.
 
-    All fields are optional and have defaults.
+    All fields are optional and have defaults. CSRF tokens are validated when CSRF protection is
+    enabled on the SessionMiddleware (SessionMiddleware(enable_csrf_protection=True)).
     """
 
-    enable_csrf_protection: bool
-    """Enable CSRF token validation. Defaults to False."""
-
     csrf_header_name: str
-    """Header name containing CSRF token. Defaults to "X-CSRF-Token"."""
+    """Header name containing CSRF token. Defaults to "X-CSRF-TOKEN"."""
 
 
 class JWTAuthConfig(TypedDict, total=False):
@@ -1191,10 +1189,10 @@ class JWTAuthConfig(TypedDict, total=False):
     """
 
     jwks_cache_max_size: int
-    """Maximum number of JWKs to cache. Defaults to 100."""
+    """Maximum number of JWKs to cache. Defaults to 20."""
 
     jwks_cache_ttl: int
-    """Time-to-live for cached JWKs in seconds. Defaults to 3600 (1 hour)."""
+    """Time-to-live for cached JWKs in milliseconds. No default: keys stay cached until evicted by size."""
 
 
 class AuthResult:

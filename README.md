@@ -772,6 +772,8 @@ The SDK automatically determines the appropriate domain configuration when const
 4. `default_tenant_custom_domain` in LoginConfig: Used if none of the above are present.
 5. `default_tenant_name` in LoginConfig: Used as the final fallback.
 
+Tenant names (from the subdomain, the `tenant_name` query parameter, or `default_tenant_name`) must be a single DNS label: letters, digits, and inner hyphens, up to 63 characters. Tenant custom domains must be a valid hostname with no port, path, or credentials. Any value that doesn't match is ignored, as if it wasn't passed, so a crafted link like `/auth/login?tenant_name=evil.com%23` can't send users off Wristband. A `tenant_custom_domain` query parameter that passes this check is also verified with Wristband before it's used.
+
 If none of these resolve a Tenant-Level domain, what happens next depends on your `application_authorization_requests_enabled` configuration:
 
 - **Enabled (the Wristband Dashboard default):** The SDK redirects to a Wristband Authorize Endpoint URL using your application's vanity domain, letting Wristband handle tenant discovery as part of the same authorization flow. See [Application-Level Authorization Requests](#application-level-authorization-requests) below.
@@ -961,7 +963,7 @@ response: Response = await wristband_auth.login(
 GET https://customer01.yourapp.io/auth/login?return_url=https://customer01.yourapp.io/settings/profile
 ```
 
-The return URL is stored in the Login State Cookie, and it is available to you in your Callback Endpoint after the SDK's `callback()` method is done executing. You can choose to send users to that return URL (if necessary). The Login Config takes precedence over the query parameter in the event a value is provided for both. Return URLs longer than 450 characters are dropped, and the login flow continues without one.
+The return URL is stored in the Login State Cookie, and it is available to you in your Callback Endpoint after the SDK's `callback()` method is done executing. You can choose to send users to that return URL (if necessary). The Login Config takes precedence over the query parameter in the event a value is provided for both. Return URLs are kept in the Login State Cookie at any length. When the SDK redirects to the Application-Level Login (Tenant Discovery) Page, the return URL is also passed in that page's `state` query parameter, which Wristband limits to 512 characters. A return URL longer than 512 characters is left out of that `state` parameter, and the login flow continues without it.
 
 Because anyone can put a `return_url` in a link to your Login Endpoint, `callback()` validates the return URL before returning it, to prevent open redirects. A relative URL (e.g. `/settings/profile`) is resolved against the callback request. An absolute URL is only kept if it uses the same protocol as the callback request and its hostname is either the hostname that served the callback request or your application's root domain. When Application-Level authorization requests are enabled with tenant subdomains, a return URL on your root domain is rewritten to the tenant's subdomain (e.g. `https://yourapp.io/settings` becomes `https://tenantA.yourapp.io/settings`). A return URL that fails validation is dropped, and `return_url` is `None` in the callback data. If your application runs behind a reverse proxy, see the `trust_proxy_headers` config in [Auth Configuration Options](#auth-configuration-options).
 
@@ -1067,7 +1069,7 @@ When a redirect is required, the `reason` field indicates why the callback faile
 | Value | Description |
 | ------ | ----------- |
 | `MISSING_LOGIN_STATE` | Login state cookie was not found (cookie expired or bookmarked callback URL) |
-| `INVALID_LOGIN_STATE` | Login state validation failed (possible CSRF attack or cookie tampering) |
+| `INVALID_LOGIN_STATE` | Login state validation failed: the Login State Cookie couldn't be decrypted, is older than 1 hour, or doesn't match the `state` query parameter (possible CSRF attack or cookie tampering) |
 | `LOGIN_REQUIRED` | Wristband returned a login_required error (session expired or max_age elapsed) |
 | `INVALID_GRANT` | Authorization code was invalid, expired, or already used |
 
@@ -1136,6 +1138,7 @@ When the callback returns a `COMPLETED` result, all of the token and userinfo da
 There are certain scenarios where, instead of callback data, the SDK returns a `RedirectRequiredCallbackResult` whose `response` redirects to your Login Endpoint. The following are edge cases where this occurs:
 
 - The Login State Cookie is missing by the time Wristband redirects back to the Callback Endpoint.
+- The Login State Cookie can't be decrypted (tampered with, or encrypted with a different secret), or is older than 1 hour, even if the browser still sent it.
 - The `state` query parameter sent from Wristband to your Callback Endpoint does not match the Login State Cookie.
 - Wristband sends a `login_required` error to your Callback Endpoint via the `error` query parameter.
 - The authorization code is invalid or expired when exchanging it for tokens (`invalid_grant`).
@@ -1204,7 +1207,7 @@ This method can also take an optional `LogoutConfig` argument:
 | ------------------ | ---- | -------- | ----------- |
 | redirect_url | Optional[str] | No | Optional URL that Wristband redirects to after it finishes ending the user's authentication session on Wristband's side. This does not end your application's own session, which your app must clear itself. If a Tenant-Level domain cannot be determined during `logout()`, the SDK redirects to this URL. If no `redirect_url` is set in that case, the SDK redirects to your Login Endpoint URL (with the `{tenant_name}` subdomain removed if your `login_url` contains it), or to the Application-Level Login Page URL when `application_authorization_requests_enabled` is `False`. |
 | refresh_token | Optional[str] | No | The refresh token to revoke during logout. Always pass this if your application uses refresh tokens, so the token can't be used to get new access tokens after the user logs out. |
-| state | Optional[str] | No | Optional value that will be appended as a query parameter to the resolved logout URL, if provided. Maximum length of 512 characters. |
+| state | Optional[str] | No | Optional value that will be appended as a query parameter to the resolved logout URL, if provided. Maximum length of 512 characters. `logout()` raises a `ValueError` for a longer value before it does anything else, including revoking the refresh token. |
 | tenant_custom_domain | Optional[str] | No | The tenant custom domain of the tenant the user belongs to, if that tenant has one. When set, `logout()` uses it to build the Tenant-Level Logout URL, and it takes priority over every other way of determining the tenant domain. |
 | tenant_name | Optional[str] | No | The name of the tenant the user belongs to. When set, `logout()` uses it to build the Tenant-Level Logout URL. It takes priority over the `tenant_custom_domain` query parameter and the tenant name resolved from the request, but not over `LogoutConfig.tenant_custom_domain`. |
 
@@ -1219,6 +1222,8 @@ The SDK automatically determines the appropriate domain configuration when const
 3. `tenant_custom_domain` query parameter: Evaluated if present and there is also no LogoutConfig provided for either `tenant_custom_domain` or `tenant_name`.
 4. Tenant subdomain in the URL: Used if none of the above are present, your `login_url` contains the `{tenant_name}` placeholder, and the subdomain is present in the host.
 5. `tenant_name` query parameter: Used as the final fallback.
+
+As with `login()`, tenant names and tenant custom domains that aren't valid DNS names are ignored, and the next option in this order is used.
 
 If none of these resolve a Tenant-Level domain, the SDK checks whether a `redirect_url` was provided in `LogoutConfig`. If so, it is used immediately as the destination, with no Wristband Logout Endpoint URL constructed.
 
@@ -1362,7 +1367,9 @@ token_data: Optional[TokenData] = await wristband_auth.refresh_token_if_expired(
 )
 ```
 
-If the `refresh_token_if_expired()` method finds that your token has not expired yet, it will return `None` as the value, which means your auth middleware can simply continue forward as usual.
+If the `refresh_token_if_expired()` method finds that your token has not expired yet, it will return `None` as the value, which means your auth middleware can simply continue forward as usual. The token is refreshed once the current time reaches `expires_at`. An `expires_at` of `0` is a valid expiration in the past, so the token is refreshed. A `TypeError` is raised if `expires_at` is missing or negative.
+
+If Wristband rejects the refresh token (for example, it expired or was revoked), a `WristbandError` with the `invalid_refresh_token` error code is raised.
 
 The `TokenData` is defined as follows:
 
@@ -1378,7 +1385,7 @@ The `TokenData` is defined as follows:
 
 ## Session Management
 
-The SDK provides encrypted cookie-based session management via the `SessionMiddleware`. Sessions are automatically attached to `request.state.session` on every request and provide a dict-like interface for storing user data. All session data is encrypted using AES-256-GCM before being stored in a session cookie.
+The SDK provides encrypted cookie-based session management via the `SessionMiddleware`. Sessions are automatically attached to `request.state.session` on every request and provide a dict-like interface for storing user data. All session data is encrypted with Fernet (AES-128-CBC with an HMAC-SHA256 signature) before being stored in a session cookie. Each encryption key is derived from your whole secret using HKDF-SHA256. Fernet also encrypts a timestamp into the cookie, and the SDK rejects session cookies older than `max_age`, so a copied session cookie stops working when the session would have expired, even if a browser would still send it.
 
 Whenever a response writes or deletes session cookies (because `save()` or `clear()` was called during the request), the SDK also sets `Cache-Control: no-store` and `Pragma: no-cache` on that response, replacing any existing values. A response that carries session cookies is specific to one user, so this prevents browsers and shared caches (CDNs, proxies) from storing it and serving it to someone else. Responses that don't touch the session are left as is.
 
@@ -1408,14 +1415,14 @@ app.add_middleware(
 
 | Parameter | Type | Required | Default | Description |
 | --------- | ---- | -------- | ------- | ----------- |
-| secret_key | str or List[str] | Yes | N/A | Secret key(s) used for encrypting and decrypting session cookie data. <br><br>**Single string:** Used for both encryption and decryption. <br><br>**List of strings:** First key encrypts new sessions, all keys tried for decryption (enables key rotation). Example: `[os.getenv("NEW_SECRET"), os.getenv("OLD_SECRET")]` <br><br>Secrets must be at least 32 characters for security. Use cryptographically random strings (you can generate secrets with: `python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"`). Max of 3 secrets allowed. |
+| secret_key | str or List[str] | Yes | N/A | Secret key(s) used for encrypting and decrypting session cookie data. <br><br>**Single string:** Used for both encryption and decryption. <br><br>**List of strings:** First key encrypts new sessions, all keys tried for decryption (enables key rotation). Example: `[os.getenv("NEW_SECRET"), os.getenv("OLD_SECRET")]` <br><br>Secrets must be at least 32 characters for security. Use cryptographically random strings (you can generate secrets with: `python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"`). Max of 3 secrets allowed: a `ValueError` is raised at startup if you pass more. |
 | session_cookie_name | str | No | `session` | The name of the session cookie to set in the response. |
 | session_cookie_domain | Optional[str] | No | `None` | Cookie domain attribute. Controls which domains can access the cookie. <br><br>**`None`:** Cookie only sent to current domain. <br><br>**`".example.com"`:** Cookie sent to example.com and all subdomains. <br><br>**`"app.example.com"`:** Cookie only sent to app.example.com. |
 | max_age | int | No | 3600 (1 hour) | Session expiration time in seconds. Determines how long a session remains valid. After this time, the session cookie expires and users must re-authenticate. Example: `86400` for 24 hours, `604800` for 7 days. |
 | path | str | No | `"/"` | Cookie path attribute. Specifies which URL paths can access the cookie. Default `"/"` means all paths. |
 | secure | bool | No | `True` | Cookie Secure flag. If `True`, cookie is only sent over HTTPS connections. <br><br>**Security recommendation:** Always use `True` in production. Only set to `False` for local development over HTTP if necessary. |
 | same_site | `SameSiteOption` | No | `SameSiteOption.LAX` | Cookie SameSite setting. Controls whether cookies are sent on cross-site requests. <br><br>**`SameSiteOption.STRICT`:** Cookies only sent for same-site requests (recommended, when possible). <br><br>**`SameSiteOption.LAX`:** Cookies sent for same-site requests plus top-level navigation GET requests (good balance). <br><br>**`SameSiteOption.NONE`:** Cookies sent for all requests (requires `secure=True`; use with CSRF token protection enabled; use only if you know what you are doing). |
-| enable_csrf_protection | bool | No | `False` | Enable CSRF protection by generating and validating CSRF tokens. <br><br>**Recommendation:** Only enable if you use `SameSiteOption.NONE` or want defense-in-depth. The default `SameSiteOption.LAX` (or `SameSiteOption.STRICT`) provides sufficient CSRF protection for most cases. <br><br>**When enabled:** CSRF token is automatically generated after authentication (via `session.save()`), stored in both session and a separate cookie, and must be included in request headers for server validation. <br><br>**When disabled:** No CSRF tokens or cookies are generated. |
+| enable_csrf_protection | bool | No | `False` | Enable CSRF protection by generating and validating CSRF tokens. This one setting controls both: the auth dependencies (`create_session_auth_dependency()` and `create_auth_dependency()` with `AuthStrategy.SESSION`) validate CSRF tokens whenever it's `True`. <br><br>**Recommendation:** Only enable if you use `SameSiteOption.NONE` or want defense-in-depth. The default `SameSiteOption.LAX` (or `SameSiteOption.STRICT`) provides sufficient CSRF protection for most cases. <br><br>**When enabled:** CSRF token is automatically generated after authentication (via `session.save()`), stored in both session and a separate cookie, and must be included in request headers for server validation. <br><br>**When disabled:** No CSRF tokens or cookies are generated. |
 | csrf_cookie_name | str | No | `CSRF-TOKEN` | Name of the CSRF cookie. Only used if `enable_csrf_protection` is `True`. |
 | csrf_cookie_domain | Optional[str] | No | `None` | Domain for CSRF cookie. Follows same rules as `session_cookie_domain` option. Falls back to `session_cookie_domain` value if not specified. Only used if `enable_csrf_protection` is `True`. |
 
@@ -1751,7 +1758,7 @@ CSRF (Cross-Site Request Forgery) protection helps prevent unauthorized actions 
 
 When you create a session using `from_callback()` or `save()` and the `enable_csrf_protection` session middleware config is `True`, the SDK:
 
-1. **Generates a CSRF token** - A cryptographically secure random token is created
+1. **Generates a CSRF token** - A cryptographically secure random token is created (32 random bytes, as 64 hex characters)
 2. **Stores the token in two places:**
    - **Session cookie** (encrypted, HttpOnly) - Contains the CSRF token as part of the encrypted session data
    - **CSRF cookie** (unencrypted, readable by JavaScript) - Contains the same CSRF token in plaintext
@@ -1789,7 +1796,7 @@ fetch('/api/protected-endpoint', {
 
 #### Automatic Validation
 
-When you use the `require_session_auth` dependency created by `wristband_auth.create_session_auth_dependency()` (or the `AuthStrategy.SESSION` strategy with the dependency created by `wristband_auth.create_session_auth_dependency()`), CSRF validation happens automatically on every request. If CSRF validation fails, an `HTTPException` with 403 Forbidden status is raised.
+When `enable_csrf_protection` is `True` on the `SessionMiddleware` and you use the `require_session_auth` dependency created by `wristband_auth.create_session_auth_dependency()` (or the `AuthStrategy.SESSION` strategy with the dependency created by `wristband_auth.create_auth_dependency()`), CSRF validation happens automatically on every request. There is no separate setting on the dependencies. If CSRF validation fails, an `HTTPException` with 403 Forbidden status is raised. Tokens are compared in constant time.
 
 > [!NOTE]
 > CSRF validation is primarily for state-changing operations (POST, PUT, DELETE). GET requests can use `require_session_auth` for authentication without CSRF concerns, though the CSRF token will still be validated if present in the request headers.
@@ -1821,34 +1828,33 @@ Session-based authentication validates users via encrypted session cookies. Use 
 ```python
 def create_session_auth_dependency(
     self,
-    enable_csrf_protection: bool = False,
     csrf_header_name: str = "X-CSRF-TOKEN"
 ) -> Callable[[Request], Awaitable[Session]]:
 ```
 
-By calling the `create_session_auth_dependency()` method on your `WristbandAuth` instance, you can create a reusable FastAPI dependency for protecting routes with session-based authentication. It validates the user's session, enforces CSRF protection (if enabled), and automatically refreshes expired access tokens when needed.
+By calling the `create_session_auth_dependency()` method on your `WristbandAuth` instance, you can create a reusable FastAPI dependency for protecting routes with session-based authentication. It validates the user's session, enforces CSRF protection (if enabled on the `SessionMiddleware`), and automatically refreshes expired access tokens when needed.
 
 ```python
+# src/main.py
+# One setting turns CSRF on for both token generation and validation
+app.add_middleware(SessionMiddleware, secret_key="...", enable_csrf_protection=True)
+
 # src/auth/wristband.py
-require_session_auth = wristband_auth.create_session_auth_dependency(
-    enable_csrf_protection=True,
-    csrf_header_name="X-CSRF-TOKEN"
-)
+require_session_auth = wristband_auth.create_session_auth_dependency(csrf_header_name="X-CSRF-TOKEN")
 ```
 
 **Configuration:**
 
 | Parameter | Type | Required | Default | Description |
 | --------- | ---- | -------- | ------- | ----------- |
-| enable_csrf_protection | bool | No | `False` | Enable CSRF token validation. Only needed if using `same_site=SameSiteOption.NONE` or for defense-in-depth. |
-| csrf_header_name | str | No | `X-CSRF-TOKEN` | The HTTP request header name to read the CSRF token from. Must match the header name your frontend uses when sending CSRF tokens. |
+| csrf_header_name | str | No | `X-CSRF-TOKEN` | The HTTP request header name to read the CSRF token from, when `enable_csrf_protection` is `True` on the `SessionMiddleware`. Must match the header name your frontend uses when sending CSRF tokens. |
 
 **Authentication Flow:**
 
 When the dependency is invoked on a request, it performs the following steps:
 
 1. Verifies the session exists and the user is authenticated
-2. Validates the CSRF token from the specified header matches the session token (if enabled)
+2. Validates the CSRF token from the specified header matches the session token (if `enable_csrf_protection` is `True` on the `SessionMiddleware`)
 3. Checks if the access token has expired and refreshes it if necessary
 4. Updates the session with new token data when refresh occurs
 5. Saves the session to persist changes (implements rolling sessions), which also sets `Cache-Control: no-store` and `Pragma: no-cache` on the response
@@ -1975,7 +1981,7 @@ The `create_jwt_auth_dependency()` method creates a reusable FastAPI dependency 
 # src/auth/wristband.py
 require_jwt_auth = wristband_auth.create_jwt_auth_dependency(
     jwks_cache_max_size=50,
-    jwks_cache_ttl=3600
+    jwks_cache_ttl=3600000  # 1 hour, in milliseconds
 )
 ```
 
@@ -1984,7 +1990,7 @@ require_jwt_auth = wristband_auth.create_jwt_auth_dependency(
 | Parameter | Type | Required | Default | Description |
 | --------- | ---- | -------- | ------- | ----------- |
 | `jwks_cache_max_size` | `int` | No | `20` | Maximum number of JSON Web Keys (JWKs) to cache in memory. Uses LRU (Least Recently Used) eviction. The default is sufficient for most cases. |
-| `jwks_cache_ttl` | `int` | No | `None` (infinite) | How long JWKs stay cached, in seconds, before refresh. The default is sufficient for most cases. Example: `3600` for 1 hour cache TTL. |
+| `jwks_cache_ttl` | `int` | No | `None` (infinite) | How long JWKs stay cached, in milliseconds, before refresh. The default (keys stay cached until evicted by size) is sufficient for most cases. Example: `3600000` for 1 hour cache TTL. |
 
 **Authentication Flow:**
 
@@ -2067,7 +2073,9 @@ The `require_jwt_auth` dependency can raise exceptions for the following scenari
 
 ### Multi-Strategy Authentication
 
-Multi-strategy authentication tries multiple authentication methods in sequence until one succeeds. Use this when you need to support both session-based web users and JWT-based API clients in the same application.
+Multi-strategy authentication supports more than one authentication method on the same routes, for requests that carry one credential or the other. Use this when you need to support both session-based web users and JWT-based API clients in the same application.
+
+A strategy is skipped only when its credential is missing: no `Authorization` header for `JWT`, or no session cookie for `SESSION`. When a credential is present and fails, the request is rejected right away, and later strategies aren't tried.
 
 <br>
 
@@ -2082,22 +2090,20 @@ def create_auth_dependency(
 ) -> Callable[[Request], Awaitable[AuthResult]]:
 ```
 
-The `create_auth_dependency()` method creates a reusable FastAPI dependency that tries multiple authentication strategies in the order specified. The first strategy that successfully authenticates the request is used.
+The `create_auth_dependency()` method creates a reusable FastAPI dependency that checks multiple authentication strategies in the order specified, using the first credential the request carries.
 
 ```python
 # src/auth/wristband.py
 from wristband.fastapi_auth import AuthStrategy, SessionAuthConfig, JWTAuthConfig
 
-# Try SESSION first, fall back to JWT for API clients
+# SESSION or JWT, whichever credential the request carries.
+# CSRF validation is turned on with SessionMiddleware(enable_csrf_protection=True).
 require_auth = wristband_auth.create_auth_dependency(
     strategies=[AuthStrategy.SESSION, AuthStrategy.JWT],
-    session_config=SessionAuthConfig(
-        enable_csrf_protection=True,
-        csrf_header_name="X-CSRF-TOKEN"
-    ),
+    session_config=SessionAuthConfig(csrf_header_name="X-CSRF-TOKEN"),
     jwt_config=JWTAuthConfig(
         jwks_cache_max_size=50,
-        jwks_cache_ttl=3600
+        jwks_cache_ttl=3600000  # 1 hour, in milliseconds
     )
 )
 ```
@@ -2106,7 +2112,7 @@ require_auth = wristband_auth.create_auth_dependency(
 
 | Parameter | Type | Required | Default | Description |
 | --------- | ---- | -------- | ------- | ----------- |
-| strategies | List[`AuthStrategy`] | Yes | N/A | Array of authentication strategies to try in sequential order. At least one strategy is required. Available strategies: `AuthStrategy.SESSION`, `AuthStrategy.JWT` |
+| strategies | List[`AuthStrategy`] | Yes | N/A | Array of authentication strategies to check in sequential order. At least one strategy is required. Available strategies: `AuthStrategy.SESSION`, `AuthStrategy.JWT` |
 | session_config | `SessionAuthConfig` | No | `None` | Configuration for session-based authentication. Only used when `AuthStrategy.SESSION` is included in strategies. |
 | jwt_config | `JWTAuthConfig` | No | `None` | Configuration for JWT authentication. Only used when `AuthStrategy.JWT` is included in strategies. |
 
@@ -2114,33 +2120,42 @@ require_auth = wristband_auth.create_auth_dependency(
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enable_csrf_protection` | `bool` | `False` | Enable CSRF token validation. |
-| `csrf_header_name` | `str` | `"X-CSRF-TOKEN"` | Header name containing CSRF token. |
+| `csrf_header_name` | `str` | `"X-CSRF-TOKEN"` | Header name containing CSRF token, when `enable_csrf_protection` is `True` on the `SessionMiddleware`. |
 
 **JWTAuthConfig:**
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
 | `jwks_cache_max_size` | `int` | `20` | Maximum number of JWKs to cache. |
-| `jwks_cache_ttl` | `int` | `3600` | Time-to-live for cached JWKs in seconds. |
+| `jwks_cache_ttl` | `int` | `None` | Time-to-live for cached JWKs in milliseconds. When not set, keys stay cached until evicted by size. |
 
 **Authentication Flow:**
 
-The dependency tries each strategy in order:
+The dependency checks each strategy in order:
 
-1. Attempts first strategy (e.g., SESSION)
-2. If first strategy fails, attempts second strategy (e.g., JWT)
-3. Returns `AuthResult` indicating which strategy succeeded
-4. If all strategies fail, returns HTTP 401
+- **`JWT`:** If the request has no `Authorization` header, skip to the next strategy. If it has one that fails (e.g. not `Bearer`, or an expired or invalid token), stop and raise a 401.
+- **`SESSION`:** If the request has no session cookie, skip to the next strategy. If it has one that fails, stop and raise that failure: 401 if the session isn't authenticated or the token refresh fails, or 403 if CSRF validation fails.
+- **Every strategy skipped:** raise a 401.
+
+The request goes through as soon as a strategy succeeds, and the dependency returns an `AuthResult` indicating which strategy succeeded.
+
+| Configured strategies | Request sent | Response |
+| --------------------- | ------------ | -------- |
+| `SESSION`, `JWT` | Session only, CSRF header wrong | 403 |
+| `SESSION`, `JWT` | Bearer token only, valid | 200 (`SESSION` skipped) |
+| `SESSION`, `JWT` | Bearer token only, expired | 401 |
+| `SESSION`, `JWT` | Both, CSRF header wrong, token valid | 403 (`SESSION` fails first, `JWT` isn't tried) |
+| `JWT`, `SESSION` | Both, token expired, session valid | 401 (`JWT` fails first, `SESSION` isn't tried) |
+| Either order | Neither | 401 |
 
 **Strategy Order:**
 
-When multiple strategies are configured, they are tried in the order specified:
+The order only matters when a request carries both credentials, since the first one present decides the result:
 ```python
-# Try JWT first, fall back to SESSION
+# Use the JWT when the request has an Authorization header, otherwise the session
 strategies=[AuthStrategy.JWT, AuthStrategy.SESSION]
 
-# Try SESSION first, fall back to JWT  
+# Use the session when the request has a session cookie, otherwise the JWT
 strategies=[AuthStrategy.SESSION, AuthStrategy.JWT]
 ```
 
@@ -2207,8 +2222,8 @@ The `require_auth` dependency can raise exceptions for the following scenarios:
 | -------------- | --------- |
 | `ValueError` | If strategies list is empty, contains duplicates, or contains invalid strategy-specific configuration. |
 | `RuntimeError` | If `SessionMiddleware` is not registered (when using `AuthStrategy.SESSION`). |
-| `HTTPException (401)` | If all authentication strategies fail. |
-| `HTTPException (403)` | If CSRF validation fails (when using `AuthStrategy.SESSION` with `enable_csrf_protection=True`). |
+| `HTTPException (401)` | If the first credential present fails authentication or token refresh, or if the request carries no credential for any strategy. |
+| `HTTPException (403)` | If CSRF validation fails (when using `AuthStrategy.SESSION` with `enable_csrf_protection=True` on the `SessionMiddleware`). |
 
 <br>
 
